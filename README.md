@@ -1,6 +1,17 @@
-# AI 全能识字助手 (AI Omnipotent Literacy Assistant)
+# AI Hanzi Tutor (AI全能识字助手)
 
 这是一个基于 AI (Google Gemini) 的全能儿童识字与听写助手。专为学龄前及低年级儿童设计，通过趣味互动、AI 讲解、语音识别等技术，让孩子快乐地学习汉字。
+
+## 📸 界面预览
+
+<div align="center">
+  <img src="assets/screenshot-1.png" width="45%" alt="主界面">
+  <img src="assets/screenshot-2.png" width="45%" alt="识字卡片">
+</div>
+<div align="center">
+  <img src="assets/screenshot-3.png" width="45%" alt="听写模式">
+  <img src="assets/screenshot-4.png" width="45%" alt="AI 讲解">
+</div>
 
 ## ✨ 核心功能
 
@@ -40,7 +51,7 @@
 直接克隆本仓库或下载 ZIP 包。
 
 ```bash
-git clone https://github.com/your-username/your-repo-name.git
+git clone https://github.com/zhumao520/AI-Hanzi-Tutor.git
 ```
 
 ### 2. 运行项目
