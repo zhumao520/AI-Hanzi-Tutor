@@ -1,0 +1,39 @@
+/* 字体加速: 使用 loli.net (Google Fonts 国内镜像) */
+        @import url('https://fonts.loli.net/css2?family=Noto+Sans+SC:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+        
+        body { font-family: 'Noto Sans SC', sans-serif; background-color: #fff7ed; user-select: none; -webkit-tap-highlight-color: transparent; }
+        .font-kaiti { font-family: "KaiTi", "STKaiti", "楷体", serif; }
+        
+        /* 田字格核心样式 */
+        .tian-zi-ge {
+            position: relative;
+            background-color: #fff;
+            border: 2px solid #ea580c;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+        .tian-zi-ge::before {
+            content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 0;
+            border-top: 1px dashed #fb923c; z-index: 0;
+        }
+        .tian-zi-ge::after {
+            content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 0;
+            border-left: 1px dashed #fb923c; z-index: 0;
+        }
+        .tian-zi-ge-content { position: relative; z-index: 10; }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 动画 */
+        .mic-active { animation: pulse-red 1.5s infinite cubic-bezier(0.66, 0, 0, 1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+        @keyframes pulse-red { to { box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); } }
+        .wiggle { animation: wiggle 0.3s ease-in-out infinite; }
+        @keyframes wiggle { 0%, 100% { transform: rotate(-1deg); } 50% { transform: rotate(1deg); } }
+        
+        .markdown-body strong { color: #ea580c; font-weight: 900; background: #ffedd5; padding: 0 4px; border-radius: 4px; }
+        .markdown-body p { margin-bottom: 0.5em; line-height: 1.6; }

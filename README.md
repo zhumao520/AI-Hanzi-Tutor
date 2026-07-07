@@ -1,6 +1,6 @@
 # AI Hanzi Tutor (AI全能识字助手)
 
-这是一个基于 AI (Google Gemini) 的全能儿童识字与听写助手。专为学龄前及低年级儿童设计，通过趣味互动、AI 讲解、语音识别等技术，让孩子快乐地学习汉字。
+这是一个基于 AI LLM 的全能儿童识字与听写助手。专为学龄前及低年级儿童设计，通过趣味互动、AI 讲解、语音识别等技术，让孩子快乐地学习汉字。
 
 ## 📸 界面预览
 
@@ -35,13 +35,13 @@
 
 ## 🛠️ 技术栈
 
-本项目是一个**单文件 (Single File)** 应用，无需复杂的构建流程，直接在浏览器运行。
+本项目使用 Vite + React 构建，适合部署到 Cloudflare Pages 等静态托管平台。
 
-- **核心框架**: React + ReactDOM (浏览器端编译)
-- **编译器**: Babel (Standalone)
-- **UI 样式**: Tailwind CSS (CDN)
+- **核心框架**: React + ReactDOM
+- **构建工具**: Vite
+- **UI 样式**: Tailwind CSS
 - **汉字笔顺**: Hanzi Writer
-- **AI 模型**: Google Gemini API (支持 Flash/Pro 模型及自定义模型)
+- **AI 模型**: Google Gemini API 或 OpenAI 兼容接口 (支持自定义 API 地址和模型)
 - **语音技术**: Web Speech API (SpeechSynthesis & webkitSpeechRecognition) + ResponsiveVoice
 - **本地存储**: LocalStorage (保存学习进度、设置和词库)
 
@@ -54,22 +54,47 @@
 git clone https://github.com/zhumao520/AI-Hanzi-Tutor.git
 ```
 
-### 2. 运行项目
-由于使用了 ES6 模块和 Babel 浏览器端编译，**建议通过本地服务器运行**以避免跨域问题（CORS）。
-
-你可以使用 VS Code 的 "Live Server" 插件，或者 Python 快速启动：
+### 2. 安装依赖
 
 ```bash
-# Python 3
-python -m http.server 8000
+npm install
 ```
-然后访问 `http://localhost:8000`。
 
-### 3. 配置 AI
+### 3. 本地开发
+
+```bash
+npm run dev
+```
+然后访问终端输出的本地地址。
+
+### 4. 生产构建
+
+```bash
+npm run build
+```
+
+构建产物会输出到 `dist/`。
+
+### 5. 配置 AI
 首次打开时，点击右上角的 **设置 (⚙️)** 图标：
-1. 输入你的 **Google Gemini API Key** (可在 [Google AI Studio](https://aistudio.google.com/) 免费申请)。
-2. 选择 AI 模型（推荐 `gemini-2.0-flash-exp` 或 `gemini-1.5-flash` 以获得更快的响应速度）。
-3. (可选) 选择喜欢的朗读语音。
+1. 选择 **Gemini** 或 **OpenAI 兼容接口**。
+2. 输入对应的 **API Key**。Gemini Key 可在 [Google AI Studio](https://aistudio.google.com/) 免费申请。
+3. 如果选择 OpenAI 兼容接口，填写 API 地址，例如 `https://api.openai.com/v1/chat/completions`。
+4. 选择或填写 AI 模型。
+5. (可选) 选择喜欢的朗读语音。
+
+## ☁️ Cloudflare Pages
+
+Cloudflare Pages 推荐配置：
+
+```text
+Framework preset: None 或 Vite
+Build command: npm run build
+Build output directory: dist
+Root directory: /
+```
+
+当前源码不需要手动嵌入 Cloudflare Web Analytics 脚本；如需统计，请在 Cloudflare 控制台开启 Web Analytics 或 Pages Analytics。
 
 ## ⚠️ 浏览器兼容性
 
