@@ -1,0 +1,9 @@
+{
+  "name": "damp-tree-d795",
+  "account_id": "14718f69a99f04e11b0edbab91ae4601",
+  "compatibility_date": "2026-07-07",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
