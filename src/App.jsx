@@ -5,6 +5,7 @@ import HomeView from './components/HomeView.jsx';
 import SettingsView from './components/SettingsView.jsx';
 import LearnMode from './components/LearnMode.jsx';
 import DictationMode from './components/DictationMode.jsx';
+import ReviewNotebookView from './components/ReviewNotebookView.jsx';
 import { useLocalStorageState } from './hooks/useLocalStorageState.js';
 import { useWakeLock } from './hooks/useWakeLock.js';
 import { collectChildData, downloadJson, restoreChildData } from './lib/childData.js';
@@ -110,6 +111,7 @@ export default function App() {
                 {mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
                 {mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
+                {mode === 'review' && <ReviewNotebookView callLLM={callLLM} profile={activeProfile} voiceURI={voiceURI} onBack={() => setMode('home')} />}
             </div>
         </div>
     );

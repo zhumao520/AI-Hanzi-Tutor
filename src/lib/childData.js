@@ -10,7 +10,8 @@ export function collectChildData(profile) {
             hanziCards: JSON.parse(localStorage.getItem(`hanzi_cards_${profileId}`) || localStorage.getItem('hanzi_cards') || '[]'),
             dictationWords: JSON.parse(localStorage.getItem(`dictation_words_${profileId}`) || localStorage.getItem('dictation_words') || '[]'),
             dictationHistory: JSON.parse(localStorage.getItem(`dictation_history_${profileId}`) || '[]'),
-            dictationWrong: JSON.parse(localStorage.getItem(`dictation_wrong_${profileId}`) || '[]')
+            dictationWrong: JSON.parse(localStorage.getItem(`dictation_wrong_${profileId}`) || '[]'),
+            reviewNotebook: JSON.parse(localStorage.getItem(`review_notebook_${profileId}`) || 'null')
         }
     };
 }
@@ -23,6 +24,7 @@ export function restoreChildData(profileId, backup) {
     if (Array.isArray(data.dictationWords)) localStorage.setItem(`dictation_words_${profileId}`, JSON.stringify(data.dictationWords));
     if (Array.isArray(data.dictationHistory)) localStorage.setItem(`dictation_history_${profileId}`, JSON.stringify(data.dictationHistory));
     if (Array.isArray(data.dictationWrong)) localStorage.setItem(`dictation_wrong_${profileId}`, JSON.stringify(data.dictationWrong));
+    if (data.reviewNotebook && typeof data.reviewNotebook === 'object') localStorage.setItem(`review_notebook_${profileId}`, JSON.stringify(data.reviewNotebook));
 }
 
 export function downloadJson(filename, data) {

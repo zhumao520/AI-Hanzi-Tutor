@@ -4,6 +4,7 @@ import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
 import { getResultLabel, parseGradingResult } from '../lib/grading.js';
 import { useDictationPlayback } from '../hooks/useDictationPlayback.js';
+import { createMistake, loadNotebook, saveNotebook } from '../lib/reviewNotebook.js';
 
 export default function DictationMode({ callLLM, addStar, voiceURI, profileId, onBack }) {
             const wordKey = `dictation_words_${profileId}`;
@@ -93,6 +94,20 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 setHistory(prev => [record, ...prev].slice(0, 80));
                 if (result === 'wrong') {
                     setWrongWords(prev => prev.includes(word) ? prev : [word, ...prev].slice(0, 80));
+                    const notebook = loadNotebook(profileId);
+                    const saved = createMistake(notebook, {
+                        subject: '语文',
+                        category: '错别字',
+                        originalQuestion: `听写词语：${word}`,
+                        wrongAnswer: '拍照批改未通过',
+                        correctAnswer: word,
+                        analysis: text || '听写时没有正确写出目标词语。',
+                        reviewTip: '下次先看一遍字形，再遮住重写。',
+                        source: 'dictation',
+                        status: '需再次复习',
+                        tags: ['听写']
+                    });
+                    if (saved.ok) saveNotebook(profileId, saved.state);
                 }
             };
 

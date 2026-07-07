@@ -25,7 +25,7 @@ export default function HomeView({ setMode, profiles, activeProfileId, setActive
                 <h1 className="text-3xl md:text-5xl font-bold text-slate-800 mb-3 md:mb-4 tracking-tight">学习时间到！</h1>
                 <p className="text-slate-400 text-sm md:text-lg">今天也要做个棒棒的小朋友 🎈</p>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 w-full max-w-4xl mx-auto">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 w-full max-w-4xl mx-auto">
                 <button onClick={() => setMode('learn')} className="w-full relative overflow-hidden bg-white p-6 md:p-8 rounded-3xl shadow-lg border-b-4 border-orange-200 hover:-translate-y-1 hover:shadow-xl active:translate-y-0 active:border-b-0 active:shadow-md transition-all group flex md:flex-col md:items-start md:text-left items-center gap-4 md:gap-6">
                     <div className="w-16 h-16 md:w-20 md:h-20 bg-gradient-to-br from-orange-400 to-red-400 rounded-2xl flex items-center justify-center text-white shadow-lg text-3xl md:text-4xl group-hover:scale-110 transition-transform duration-300">🎴</div>
                     <div className="text-left flex-1">
@@ -38,6 +38,13 @@ export default function HomeView({ setMode, profiles, activeProfileId, setActive
                     <div className="text-left flex-1">
                         <h3 className="text-xl md:text-2xl font-bold text-slate-700 mb-1">听写练习</h3>
                         <p className="text-xs md:text-sm text-slate-400 leading-relaxed">语音报词 • 拍照智能批改<br/>支持 📸 拍照一键导入词库</p>
+                    </div>
+                </button>
+                <button onClick={() => setMode('review')} className="w-full relative overflow-hidden bg-white p-6 md:p-8 rounded-3xl shadow-lg border-b-4 border-green-200 hover:-translate-y-1 hover:shadow-xl active:translate-y-0 active:border-b-0 active:shadow-md transition-all group flex md:flex-col md:items-start md:text-left items-center gap-4 md:gap-6">
+                    <div className="w-16 h-16 md:w-20 md:h-20 bg-gradient-to-br from-green-400 to-teal-400 rounded-2xl flex items-center justify-center text-white shadow-lg text-3xl md:text-4xl group-hover:scale-110 transition-transform duration-300">📚</div>
+                    <div className="text-left flex-1">
+                        <h3 className="text-xl md:text-2xl font-bold text-slate-700 mb-1">错题本</h3>
+                        <p className="text-xs md:text-sm text-slate-400 leading-relaxed">AI 拍照整理 • 复习记录<br/>薄弱点统计和导出</p>
                     </div>
                 </button>
             </div>
