@@ -5,8 +5,9 @@ import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
 import { sanitizeHtml, renderMarkdown } from '../lib/html.js';
 
-export default function LearnMode({ callLLM, addStar, onBack }) {
-            const [cards, setCards] = useState(() => JSON.parse(localStorage.getItem('hanzi_cards')) || [{id:1,hanzi:'爸',pinyin:'bà'},{id:2,hanzi:'妈',pinyin:'mā'}]);
+export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
+            const cardKey = `hanzi_cards_${profileId}`;
+            const [cards, setCards] = useState(() => JSON.parse(localStorage.getItem(cardKey) || localStorage.getItem('hanzi_cards') || '[{"id":1,"hanzi":"爸","pinyin":"bà"},{"id":2,"hanzi":"妈","pinyin":"mā"}]'));
             const [view, setView] = useState('gallery'); 
             const [curIdx, setCurIdx] = useState(0);
             const [aiStatus, setAiStatus] = useState('idle');
@@ -28,7 +29,13 @@ export default function LearnMode({ callLLM, addStar, onBack }) {
 
             const writerRef = useRef(null);
 
-            useEffect(() => localStorage.setItem('hanzi_cards', JSON.stringify(cards)), [cards]);
+            useEffect(() => {
+                setCards(JSON.parse(localStorage.getItem(cardKey) || localStorage.getItem('hanzi_cards') || '[{"id":1,"hanzi":"爸","pinyin":"bà"},{"id":2,"hanzi":"妈","pinyin":"mā"}]'));
+                setCurIdx(0);
+                setView('gallery');
+            }, [cardKey]);
+
+            useEffect(() => localStorage.setItem(cardKey, JSON.stringify(cards)), [cardKey, cards]);
 
             useEffect(() => {
                 setIsWriting(false); setAiResult(''); setChatMode(false); setChatHistory([]); // 切换字时重置聊天
@@ -478,4 +485,3 @@ export default function LearnMode({ callLLM, addStar, onBack }) {
         }
 
         // --- 听写模式 (已修复连读Bug，并优化首字发音) ---
-

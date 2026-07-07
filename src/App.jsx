@@ -7,6 +7,7 @@ import LearnMode from './components/LearnMode.jsx';
 import DictationMode from './components/DictationMode.jsx';
 import { useLocalStorageState } from './hooks/useLocalStorageState.js';
 import { useWakeLock } from './hooks/useWakeLock.js';
+import { collectChildData, downloadJson, restoreChildData } from './lib/childData.js';
 
 export default function App() {
     const [mode, setMode] = useState('home');
@@ -73,6 +74,22 @@ export default function App() {
         setProfiles(nextProfiles);
         if (activeProfileId === profileIdToDelete) setActiveProfileId(nextProfiles[0].id);
     };
+    const exportActiveChildData = () => {
+        const backup = collectChildData(activeProfile);
+        downloadJson(`ai-hanzi-${activeProfile.name}-${profileId}.json`, backup);
+    };
+    const importActiveChildData = async (file) => {
+        if (!file) return;
+        const text = await file.text();
+        const backup = JSON.parse(text);
+        if (!backup.data) {
+            alert('备份文件格式不正确');
+            return;
+        }
+        restoreChildData(profileId, backup);
+        setStars(localStorage.getItem(`app_stars_${profileId}`) || '0');
+        alert(`已恢复 ${activeProfile.name} 的数据`);
+    };
 
     return (
         <div className="min-h-screen flex flex-col w-full md:max-w-5xl mx-auto bg-orange-50 shadow-2xl relative overflow-hidden transition-all duration-300">
@@ -90,8 +107,8 @@ export default function App() {
             </header>
             <div className="flex-1 overflow-hidden relative flex flex-col">
                 {mode === 'home' && <HomeView setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
-                {mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} onBack={() => setMode('home')} />}
-                {mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} onBack={() => setMode('home')} />}
+                {mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
+                {mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
             </div>
         </div>

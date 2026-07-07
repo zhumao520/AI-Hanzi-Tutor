@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
+import { getResultLabel, parseGradingResult } from '../lib/grading.js';
 import { useDictationPlayback } from '../hooks/useDictationPlayback.js';
 
 export default function DictationMode({ callLLM, addStar, voiceURI, profileId, onBack }) {
@@ -14,6 +15,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
             const [idx, setIdx] = useState(0);
             const [status, setStatus] = useState('idle');
             const [feedback, setFeedback] = useState('');
+            const [gradeResult, setGradeResult] = useState('');
             const [lastCheckedWord, setLastCheckedWord] = useState('');
             const [showHint, setShowHint] = useState(false);
             const [hintCount, setHintCount] = useState(0); // 记录查看次数
@@ -36,6 +38,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 setWrongWords(JSON.parse(localStorage.getItem(wrongKey) || '[]'));
                 setIdx(0);
                 setFeedback('');
+                setGradeResult('');
                 setLastCheckedWord('');
             }, [historyKey, wordKey, wrongKey]);
             useEffect(() => localStorage.setItem(wordKey, JSON.stringify(words)), [wordKey, words]);
@@ -80,6 +83,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                     setIdx(prev => prev + 1); // 切换索引
                     setStatus('idle'); 
                     setFeedback(''); 
+                    setGradeResult('');
                     requestAutoPlay(); // 标记翻页后自动播放
                 } else alert("完成！"); 
             };
@@ -95,6 +99,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
             const markWrong = () => {
                 const word = lastCheckedWord || words[idx];
                 saveHistory(word, 'wrong', feedback);
+                setGradeResult('wrong');
                 alert(`已加入错题：${word}`);
             };
 
@@ -102,6 +107,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 const word = lastCheckedWord || words[idx];
                 saveHistory(word, 'correct', feedback);
                 setWrongWords(prev => prev.filter(item => item !== word));
+                setGradeResult('correct');
                 alert(`已记录通过：${word}`);
             };
             
@@ -110,10 +116,26 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 const checkedWord = words[idx];
                 setStatus('grading'); setFeedback('👀 批改中...');
                 const base64 = await compressImage(file);
-                const res = await callLLM({ contents: [{ parts: [{ text: `检查作业是否包含"${checkedWord}"。温柔点评。` }, { inlineData: { mimeType: "image/jpeg", data: base64 } }] }] });
+                const res = await callLLM({ contents: [{ parts: [{ text: `检查作业是否正确写出了词语“${checkedWord}”。
+请只返回 JSON，不要 Markdown，不要代码块：
+{"result":"correct|wrong|uncertain","feedback":"给5岁小朋友的一句话温柔点评"}
+判断规则：
+- 清楚写对目标词语，result 为 correct
+- 明显没写、写错字、少字、多字，result 为 wrong
+- 图片模糊、遮挡、无法判断，result 为 uncertain` }, { inlineData: { mimeType: "image/jpeg", data: base64 } }] }] });
                 setStatus('listening');
                 setLastCheckedWord(checkedWord);
-                if(res.text) { setFeedback(res.text); saveHistory(checkedWord, 'checked', res.text); playAudio(res.text); addStar(); }
+                if(res.text) {
+                    const parsed = parseGradingResult(res.text);
+                    setGradeResult(parsed.result);
+                    setFeedback(parsed.feedback);
+                    saveHistory(checkedWord, parsed.result, parsed.feedback);
+                    if (parsed.result === 'correct') {
+                        setWrongWords(prev => prev.filter(item => item !== checkedWord));
+                        addStar();
+                    }
+                    playAudio(parsed.feedback);
+                }
             };
 
             const handlePhotoImportWords = async (e) => {
@@ -142,7 +164,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         } else { alert("词语都重复了，无需添加。"); }
                     } else { alert("没找到合适的词语。"); }
                 } catch(e) { alert("识别失败"); }
-                setStatus('idle'); setFeedback('');
+                setStatus('idle'); setFeedback(''); setGradeResult('');
             };
 
             const handleImport = () => {
@@ -180,6 +202,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                     setWords(list);
                     setIdx(0);
                     setFeedback('');
+                    setGradeResult('');
                     alert('词库导入成功');
                 }
             };
@@ -204,6 +227,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 setIdx(0);
                 setStatus('idle');
                 setFeedback('');
+                setGradeResult('');
             };
 
             const clearWrongWords = () => {
@@ -253,7 +277,10 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         </div>
                         {feedback && (
                             <div className="bg-white p-4 rounded-xl shadow border-l-4 border-orange-400 mt-4 text-sm text-slate-600 animate-in slide-in-from-bottom-2 w-full max-w-md">
-                                <div>{feedback}</div>
+                                <div className="flex items-start gap-2">
+                                    {gradeResult && <span className={`shrink-0 px-2 py-1 rounded-full text-xs font-bold ${gradeResult === 'correct' ? 'bg-green-50 text-green-600' : gradeResult === 'wrong' ? 'bg-red-50 text-red-500' : 'bg-yellow-50 text-yellow-600'}`}>{getResultLabel(gradeResult)}</span>}
+                                    <div>{feedback}</div>
+                                </div>
                                 {lastCheckedWord && (
                                     <div className="grid grid-cols-2 gap-2 mt-3">
                                         <button onClick={markCorrect} className="py-2 rounded-lg bg-green-50 text-green-600 font-bold">记录通过</button>
@@ -305,7 +332,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                             <div className="mt-3 border-t border-slate-100 pt-2 space-y-1 max-h-20 overflow-y-auto">
                                 {history.length ? history.slice(0, 5).map(record => (
                                     <div key={record.id} className="flex justify-between gap-2">
-                                        <span className={record.result === 'wrong' ? 'text-red-500' : record.result === 'correct' ? 'text-green-600' : 'text-slate-500'}>{record.word} · {record.result === 'wrong' ? '错题' : record.result === 'correct' ? '通过' : '已批改'}</span>
+                                        <span className={record.result === 'wrong' ? 'text-red-500' : record.result === 'correct' ? 'text-green-600' : record.result === 'uncertain' ? 'text-yellow-600' : 'text-slate-500'}>{record.word} · {getResultLabel(record.result)}</span>
                                         <span className="text-slate-300">{new Date(record.createdAt).toLocaleDateString()}</span>
                                     </div>
                                 )) : <div className="text-slate-300">暂无听写历史</div>}

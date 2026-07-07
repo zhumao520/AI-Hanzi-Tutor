@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { playAudio } from '../lib/audio.js';
 import { useSpeechVoices } from '../hooks/useSpeechVoices.js';
 
-export default function SettingsView({ provider, setProvider, baseUrl, setBaseUrl, apiKey, setApiKey, model, setModel, voiceURI, setVoiceURI, profiles, activeProfileId, setActiveProfileId, addProfile, renameProfile, deleteProfile, onBack }) {
+export default function SettingsView({ provider, setProvider, baseUrl, setBaseUrl, apiKey, setApiKey, model, setModel, voiceURI, setVoiceURI, profiles, activeProfileId, setActiveProfileId, addProfile, renameProfile, deleteProfile, exportActiveChildData, importActiveChildData, onBack }) {
     const [p, setP] = useState(provider);
     const [url, setUrl] = useState(baseUrl);
     const [k, setK] = useState(apiKey);
@@ -65,6 +65,13 @@ export default function SettingsView({ provider, setProvider, baseUrl, setBaseUr
                                 if (name) renameProfile(activeProfileId, name);
                             }} className="py-2 bg-white border border-orange-100 text-orange-500 rounded-xl text-sm font-bold">改名</button>
                             <button onClick={() => deleteProfile(activeProfileId)} className="py-2 bg-white border border-red-100 text-red-500 rounded-xl text-sm font-bold">删除</button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                            <button onClick={exportActiveChildData} className="py-2 bg-white border border-green-100 text-green-600 rounded-xl text-sm font-bold">导出这个孩子</button>
+                            <label className="py-2 bg-white border border-blue-100 text-blue-600 rounded-xl text-sm font-bold text-center cursor-pointer">
+                                导入恢复
+                                <input type="file" className="hidden" accept=".json,application/json" onChange={async e => { await importActiveChildData(e.target.files[0]); e.target.value = ''; }} />
+                            </label>
                         </div>
                     </div>
                 </div>
