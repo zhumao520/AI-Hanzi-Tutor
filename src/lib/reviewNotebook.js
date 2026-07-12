@@ -1,3 +1,5 @@
+import { getChildValue, setChildValue } from './childWorkspace.js';
+
 export const SUBJECTS = ['语文', '数学', '英语'];
 export const STATUSES = ['未复习', '已复习', '已掌握', '需再次复习'];
 export const SOURCES = ['manual', 'dictation', 'photo', 'voice'];
@@ -109,13 +111,9 @@ function normalizeState(value) {
     };
 }
 
-export function storageKey(profileId) {
-    return `review_notebook_${profileId}`;
-}
-
 export function loadNotebook(profileId) {
     try {
-        return normalizeState(JSON.parse(localStorage.getItem(storageKey(profileId)) || 'null'));
+        return normalizeState(getChildValue(profileId, 'reviewNotebook', null));
     } catch {
         return { ...emptyState };
     }
@@ -123,7 +121,7 @@ export function loadNotebook(profileId) {
 
 export function saveNotebook(profileId, state) {
     const normalized = normalizeState(state);
-    localStorage.setItem(storageKey(profileId), JSON.stringify(normalized));
+    setChildValue(profileId, 'reviewNotebook', normalized);
     return normalized;
 }
 
@@ -170,6 +168,7 @@ export function normalizeDraft(input = {}) {
         analysis: String(input.analysis || '').trim(),
         reviewTip: String(input.reviewTip || '').trim(),
         source: SOURCES.includes(input.source) ? input.source : 'manual',
+        sourceKey: String(input.sourceKey || '').trim(),
         status: STATUSES.includes(input.status) ? input.status : '未复习',
         tags: normalizeTags(input.tags)
     };
@@ -218,11 +217,39 @@ export function deleteMistake(state, mistakeId) {
     };
 }
 
-export function updateMistakeStatus(state, mistakeId, status) {
-    if (!STATUSES.includes(status)) return { ok: false, error: '状态不合法。' };
-    const current = state.mistakes.find(item => item.id === mistakeId);
-    if (!current) return { ok: false, error: '错题不存在。' };
-    return updateMistake(state, mistakeId, { ...current, status });
+export function upsertDictationMistake(state, input) {
+    const sourceKey = String(input.sourceKey || '').trim();
+    const current = sourceKey ? state.mistakes.find(item => item.sourceKey === sourceKey) : null;
+    if (current) {
+        return updateMistake(state, current.id, {
+            ...input,
+            source: 'dictation',
+            sourceKey,
+            status: '需再次复习',
+            lastDictationResult: 'wrong',
+            lastDictationAt: new Date().toISOString()
+        });
+    }
+    return createMistake(state, {
+        ...input,
+        source: 'dictation',
+        sourceKey,
+        status: '需再次复习',
+        lastDictationResult: 'wrong',
+        lastDictationAt: new Date().toISOString()
+    });
+}
+
+export function resolveDictationMistake(state, sourceKey, feedback = '') {
+    const current = state.mistakes.find(item => item.sourceKey === sourceKey);
+    if (!current) return { ok: true, state, record: null };
+    return updateMistake(state, current.id, {
+        ...current,
+        status: '已掌握',
+        lastDictationResult: 'correct',
+        lastDictationFeedback: feedback,
+        lastDictationAt: new Date().toISOString()
+    });
 }
 
 export function filterMistakes(state, filters = {}) {
@@ -312,11 +339,13 @@ export function summarizeReviewSession(state, sessionId) {
     };
 }
 
-export function submitReviewAnswer(state, sessionId, mistakeId, userAnswer) {
+export function submitReviewAnswer(state, sessionId, mistakeId, userAnswer, judgement = null) {
     const session = state.reviewSessions.find(item => item.id === sessionId);
     const mistake = state.mistakes.find(item => item.id === mistakeId);
     if (!session || !mistake) return { ok: false, error: '复习记录不存在。' };
-    const isCorrect = normalizeText(userAnswer) && normalizeText(userAnswer) === normalizeText(mistake.correctAnswer || mistake.originalQuestion);
+    const isCorrect = typeof judgement?.isCorrect === 'boolean'
+        ? judgement.isCorrect
+        : normalizeText(userAnswer) && normalizeText(userAnswer) === normalizeText(mistake.correctAnswer || mistake.originalQuestion);
     const attempt = {
         id: makeId('review_attempt'),
         sessionId,
@@ -324,6 +353,8 @@ export function submitReviewAnswer(state, sessionId, mistakeId, userAnswer) {
         userAnswer: String(userAnswer || '').trim(),
         correctAnswerSnapshot: mistake.correctAnswer || mistake.originalQuestion,
         isCorrect,
+        judgementSource: judgement?.source || 'local',
+        feedback: String(judgement?.feedback || '').trim(),
         createdAt: new Date().toISOString()
     };
     const reviewedMistakeIds = [...new Set([...session.reviewedMistakeIds, mistakeId])];
@@ -567,8 +598,9 @@ export function downloadText(filename, text, type = 'text/plain;charset=utf-8') 
     URL.revokeObjectURL(url);
 }
 
-export function parseAiMistakeDraft(text) {
+export function parseAiMistakeDrafts(text) {
     const clean = String(text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
-    return normalizeDraft(parsed);
+    const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : [parsed]);
+    return items.map(normalizeDraft).filter(item => item.originalQuestion);
 }

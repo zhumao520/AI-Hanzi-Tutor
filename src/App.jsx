@@ -6,9 +6,13 @@ import SettingsView from './components/SettingsView.jsx';
 import LearnMode from './components/LearnMode.jsx';
 import DictationMode from './components/DictationMode.jsx';
 import ReviewNotebookView from './components/ReviewNotebookView.jsx';
+import EnglishDictationMode from './components/EnglishDictationMode.jsx';
+import EnglishConversationMode from './components/EnglishConversationMode.jsx';
 import { useLocalStorageState } from './hooks/useLocalStorageState.js';
 import { useWakeLock } from './hooks/useWakeLock.js';
-import { collectChildData, downloadJson, restoreChildData } from './lib/childData.js';
+import { collectChildData, describeChildBackup, downloadJson, parseChildBackup, restoreChildData } from './lib/childData.js';
+import { getChildValue, hydrateChildWorkspace, setChildValue } from './lib/childWorkspace.js';
+import { loadReminder, notifyStudyReminder, shouldNotify } from './lib/reminder.js';
 
 export default function App() {
     const [mode, setMode] = useState('home');
@@ -24,11 +28,22 @@ export default function App() {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('llm_api_key') || localStorage.getItem('gemini_key') || '');
     const [model, setModel] = useState(() => localStorage.getItem('llm_model') || localStorage.getItem('gemini_model') || 'gemini-3-flash-preview');
     const [voiceURI, setVoiceURI] = useLocalStorageState('app_voice_uri', 'auto');
+    const [englishVoiceURI, setEnglishVoiceURI] = useLocalStorageState('app_english_voice_uri', 'auto');
+    const [workspaceReady, setWorkspaceReady] = useState(false);
 
     useWakeLock();
 
     const activeProfile = profiles.find(profile => profile.id === activeProfileId) || profiles[0];
     const profileId = activeProfile?.id || 'default';
+
+    useEffect(() => {
+        let active = true;
+        setWorkspaceReady(false);
+        hydrateChildWorkspace(profileId)
+            .then(() => { if (active) setWorkspaceReady(true); })
+            .catch(() => { if (active) setWorkspaceReady(true); });
+        return () => { active = false; };
+    }, [profileId]);
 
     useEffect(() => {
         localStorage.setItem('child_profiles', JSON.stringify(profiles));
@@ -41,15 +56,23 @@ export default function App() {
     }, [activeProfileId, profiles, setActiveProfileId]);
 
     useEffect(() => {
-        setStars(localStorage.getItem(`app_stars_${profileId}`) || localStorage.getItem('app_stars') || '0');
-    }, [profileId]);
+        if (workspaceReady) setStars(getChildValue(profileId, 'stars', '0'));
+    }, [profileId, workspaceReady]);
 
     useEffect(() => {
-        localStorage.setItem(`app_stars_${profileId}`, stars);
-    }, [profileId, stars]);
+        if (workspaceReady) setChildValue(profileId, 'stars', stars);
+    }, [profileId, stars, workspaceReady]);
 
     useEffect(() => localStorage.setItem('llm_api_key', apiKey), [apiKey]);
     useEffect(() => localStorage.setItem('llm_model', model), [model]);
+
+    useEffect(() => {
+        if (!workspaceReady) return;
+        const reminder = loadReminder(profileId);
+        if (shouldNotify(reminder)) {
+            notifyStudyReminder(profileId, activeProfile?.name, reminder);
+        }
+    }, [activeProfile?.name, profileId, workspaceReady]);
 
     const addStar = () => setStars(s => String(parseInt(s || '0') + 1));
     const callLLM = (payload) => requestLLM({ provider, baseUrl, apiKey, model, payload });
@@ -82,14 +105,29 @@ export default function App() {
     const importActiveChildData = async (file) => {
         if (!file) return;
         const text = await file.text();
-        const backup = JSON.parse(text);
-        if (!backup.data) {
-            alert('备份文件格式不正确');
+        const parsed = parseChildBackup(text);
+        if (!parsed.ok) {
+            alert(parsed.error);
             return;
         }
-        restoreChildData(profileId, backup);
-        setStars(localStorage.getItem(`app_stars_${profileId}`) || '0');
-        alert(`已恢复 ${activeProfile.name} 的数据`);
+        const backup = parsed.backup;
+        const preview = describeChildBackup(backup);
+        const confirmed = confirm([
+            `准备恢复到：${activeProfile.name}`,
+            `备份孩子：${preview.childName}`,
+            `导出时间：${preview.exportedAt}`,
+            `识字卡：${preview.hanziCards} 张，中文词：${preview.chineseWords} 个，英文项：${preview.englishItems} 个，错题：${preview.mistakes} 条`,
+            '',
+            '继续将替换当前孩子的全部学习数据，且不可撤销。'
+        ].join('\n'));
+        if (!confirmed) return;
+        try {
+            await restoreChildData(profileId, backup);
+            setStars(getChildValue(profileId, 'stars', '0'));
+            alert(`已恢复 ${activeProfile.name} 的数据`);
+        } catch (error) {
+            alert(error.message || '恢复失败，请检查备份文件。');
+        }
     };
 
     return (
@@ -108,10 +146,13 @@ export default function App() {
             </header>
             <div className="flex-1 overflow-hidden relative flex flex-col">
                 {mode === 'home' && <HomeView setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
-                {mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
-                {mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
-                {mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
-                {mode === 'review' && <ReviewNotebookView callLLM={callLLM} profile={activeProfile} voiceURI={voiceURI} onBack={() => setMode('home')} />}
+                {!workspaceReady && mode !== 'home' && <div className="flex-1 flex items-center justify-center text-slate-400 font-bold">正在加载孩子的数据...</div>}
+                {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'review' && <ReviewNotebookView callLLM={callLLM} profile={activeProfile} voiceURI={voiceURI} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'englishDictation' && <EnglishDictationMode callLLM={callLLM} addStar={addStar} voiceURI={englishVoiceURI} feedbackVoiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'englishConversation' && <EnglishConversationMode callLLM={callLLM} addStar={addStar} voiceURI={englishVoiceURI} feedbackVoiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
             </div>
         </div>
     );

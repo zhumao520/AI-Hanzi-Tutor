@@ -3,6 +3,7 @@ import Icon from './Icon.jsx';
 import MathDiagram from './MathDiagram.jsx';
 import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
+import { getActiveVisionSupport } from '../lib/aiCapabilities.js';
 import { buildStoryPrompt, formatStoryForSpeech, parseStoryExplanation } from '../lib/storyExplanation.js';
 import { buildPhotoCheckPrompt, buildPracticePrompt, buildTextCheckPrompt, formatPracticeForSpeech, parsePracticeCheck, parsePracticeResponse } from '../lib/transferPractice.js';
 import {
@@ -22,7 +23,7 @@ import {
     getTodayReviewMistakeIds,
     loadNotebook,
     openPrintableReview,
-    parseAiMistakeDraft,
+    parseAiMistakeDrafts,
     saveNotebook,
     startReviewSession,
     submitReviewAnswer,
@@ -58,6 +59,28 @@ function toForm(record) {
     return { ...emptyDraft, ...record, tags: parseTags(record?.tags), recordDate: record?.recordDate || today() };
 }
 
+function needsAiReview(record) {
+    return record.subject === '数学' || !['错别字', '多音字', '单词拼写'].includes(record.category);
+}
+
+function buildReviewCheckPrompt(record, childAnswer) {
+    return `请判断孩子是否正确完成错题复习。
+
+学科：${record.subject}
+错题：${record.originalQuestion}
+正确答案：${record.correctAnswer || '无'}
+错因：${record.analysis || '无'}
+孩子答案：${childAnswer || '（图片作答）'}
+
+判断规则：
+- 数学允许等价答案，重视计算和思路是否正确。
+- 语文阅读、翻译和英语表达允许意思相同的不同写法。
+- 无法从内容或图片判断时，result 为 uncertain。
+
+只返回 JSON：
+{"result":"correct|wrong|uncertain","feedback":"给小朋友的一句话反馈","shouldMaster":false}`;
+}
+
 export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack }) {
     const profileId = profile?.id || 'default';
     const childName = profile?.name || '孩子';
@@ -74,8 +97,15 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
     const [duplicates, setDuplicates] = useState([]);
     const [activeSessionId, setActiveSessionId] = useState('');
     const [answer, setAnswer] = useState('');
+    const [reviewStatus, setReviewStatus] = useState('');
+    const [reviewBusy, setReviewBusy] = useState(false);
+    const [showReferenceAnswer, setShowReferenceAnswer] = useState(false);
+    const [photoDrafts, setPhotoDrafts] = useState([]);
+    const visionSupport = getActiveVisionSupport();
     const [exportOptions, setExportOptions] = useState({
         cycle: 'custom',
+        startDate: '',
+        endDate: '',
         template: 'detailed',
         excludeMastered: false,
         prioritizeNeedReview: true,
@@ -90,6 +120,8 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         setEditingId('');
         setSelectedId('');
         setActiveSessionId('');
+        setPhotoDrafts([]);
+        setShowReferenceAnswer(false);
     }, [profileId]);
 
     useEffect(() => {
@@ -116,6 +148,7 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         setDraft({ ...emptyDraft, recordDate: today() });
         setEditingId('');
         setDuplicates([]);
+        setPhotoDrafts([]);
     };
 
     const saveRecord = () => {
@@ -290,22 +323,29 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         const file = event.target.files[0];
         event.target.value = '';
         if (!file) return;
+        if (visionSupport === 'unsupported') {
+            alert('当前模型未通过图片能力测试。请在系统设置中测试或更换支持图片的模型。');
+            return;
+        }
         setAiStatus('AI 正在整理错题...');
         const base64 = await compressImage(file);
-        const prompt = `请从图片中提取儿童作业错题，并返回严格 JSON，不要 Markdown。
-字段：
+        const prompt = `请从图片中提取儿童作业中的所有错题，并返回严格 JSON，不要 Markdown。
+每一道错题是一条记录。没有明显错题时返回 {"items":[]}。
+JSON 格式：
 {
-  "recordDate":"YYYY-MM-DD或空",
-  "subject":"语文|数学|英语",
-  "category":"错题分类",
-  "originalQuestion":"原题或题目要求",
-  "wrongAnswer":"孩子的错答或错误表现，没有则空",
-  "correctAnswer":"正确答案，没有把握则空",
-  "analysis":"错因简析，一句话",
-  "reviewTip":"给家长的复习建议，一句话",
-  "tags":["标签1","标签2"]
+  "items":[{
+    "recordDate":"YYYY-MM-DD或空",
+    "subject":"语文|数学|英语",
+    "category":"错题分类",
+    "originalQuestion":"原题或题目要求",
+    "wrongAnswer":"孩子的错答或错误表现，没有则空",
+    "correctAnswer":"正确答案，没有把握则空",
+    "analysis":"错因简析，一句话",
+    "reviewTip":"给家长的复习建议，一句话",
+    "tags":["标签1","标签2"]
+  }]
 }
-如果图片看不清，也尽量返回能判断的字段。`;
+无法确定是错题的内容不要编造。`;
         const res = await callLLM({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }] }] });
         if (res.error) {
             setAiStatus('');
@@ -313,9 +353,18 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
             return;
         }
         try {
-            const parsed = parseAiMistakeDraft(res.text);
-            setDraft(toForm({ ...parsed, source: 'photo' }));
-            setDuplicates(detectDuplicates(state, parsed));
+            const parsed = parseAiMistakeDrafts(res.text);
+            if (!parsed.length) {
+                alert('没有识别到明确的错题，请换一张更清晰的照片。');
+                setAiStatus('');
+                return;
+            }
+            setPhotoDrafts(parsed.map((item, index) => ({
+                id: `photo_${Date.now()}_${index}`,
+                draft: { ...item, source: 'photo' },
+                selected: true,
+                duplicates: detectDuplicates(state, item)
+            })));
             setTab('new');
             setAiStatus('');
         } catch {
@@ -324,10 +373,43 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         }
     };
 
-    const startReview = (scope) => {
-        const ids = scope === 'today'
+    const savePhotoDrafts = () => {
+        const selectedDrafts = photoDrafts.filter(item => item.selected);
+        if (!selectedDrafts.length) {
+            alert('请至少选择一道错题');
+            return;
+        }
+        let nextState = state;
+        let savedCount = 0;
+        selectedDrafts.forEach(item => {
+            const nearDuplicate = detectDuplicates(nextState, item.draft).some(match => match.score >= 0.9);
+            if (nearDuplicate) return;
+            const result = createMistake(nextState, item.draft);
+            if (result.ok) {
+                nextState = result.state;
+                savedCount += 1;
+            }
+        });
+        setState(nextState);
+        setPhotoDrafts([]);
+        setTab('records');
+        alert(savedCount ? `已保存 ${savedCount} 道错题` : '所选错题都与已有记录重复，未重复保存');
+    };
+
+    const updatePhotoDraft = (id, patch) => {
+        setPhotoDrafts(prev => prev.map(item => {
+            if (item.id !== id) return item;
+            const draft = { ...item.draft, ...patch };
+            if (patch.subject && patch.subject !== item.draft.subject) draft.category = CATEGORY_MAP[patch.subject]?.[0] || '';
+            return { ...item, draft };
+        }));
+    };
+
+    const startReview = (scope, limit = 0) => {
+        const allIds = scope === 'today'
             ? getTodayReviewMistakeIds(state)
             : (scope === 'all' ? state.mistakes : state.mistakes.filter(item => item.status !== '已掌握')).map(item => item.id);
+        const ids = limit > 0 ? allIds.slice(0, limit) : allIds;
         const result = startReviewSession(state, ids);
         if (!result.ok) {
             alert(result.error);
@@ -336,19 +418,105 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         setState(result.state);
         setActiveSessionId(result.session.id);
         setAnswer('');
+        setShowReferenceAnswer(false);
+        setReviewStatus('');
         setTab('review');
     };
 
-    const submitAnswer = () => {
+    const applyReviewAnswer = (childAnswer, judgement = null) => {
         if (!activeSession || !currentReviewMistake) return;
-        const result = submitReviewAnswer(state, activeSession.id, currentReviewMistake.id, answer);
+        const result = submitReviewAnswer(state, activeSession.id, currentReviewMistake.id, childAnswer, judgement);
         if (!result.ok) {
             alert(result.error);
             return;
         }
         setState(result.state);
         setAnswer('');
+        setShowReferenceAnswer(true);
+        setReviewStatus(judgement?.feedback || (result.attempt.isCorrect ? '答对了。' : '这题还需要再看一看。'));
         if (result.session.completedAt) alert('本轮复习完成');
+    };
+
+    const submitAnswer = async () => {
+        if (!activeSession || !currentReviewMistake || !answer.trim()) {
+            alert('请先输入孩子答案');
+            return;
+        }
+        if (!needsAiReview(currentReviewMistake)) {
+            applyReviewAnswer(answer);
+            return;
+        }
+        setReviewBusy(true);
+        setReviewStatus('AI 正在判断这道题...');
+        const res = await callLLM({ contents: [{ parts: [{ text: buildReviewCheckPrompt(currentReviewMistake, answer) }] }] });
+        setReviewBusy(false);
+        if (res.error) {
+            setReviewStatus(res.error);
+            return;
+        }
+        try {
+            const check = parsePracticeCheck(res.text);
+            if (check.result === 'uncertain') {
+                setReviewStatus(check.feedback || '这次无法判断，请换一种写法或拍照提交。');
+                return;
+            }
+            applyReviewAnswer(answer, { isCorrect: check.result === 'correct', source: 'ai-text', feedback: check.feedback });
+        } catch {
+            setReviewStatus('AI 批改格式不正确，请重试。');
+        }
+    };
+
+    const submitReviewPhoto = async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file || !activeSession || !currentReviewMistake) return;
+        if (visionSupport === 'unsupported') {
+            setReviewStatus('当前模型未通过图片能力测试，请在系统设置中更换或测试模型。');
+            return;
+        }
+        setReviewBusy(true);
+        setReviewStatus('AI 正在查看答题照片...');
+        const base64 = await compressImage(file);
+        const res = await callLLM({ contents: [{ parts: [
+            { text: buildReviewCheckPrompt(currentReviewMistake, answer) },
+            { inlineData: { mimeType: 'image/jpeg', data: base64 } }
+        ] }] });
+        setReviewBusy(false);
+        if (res.error) {
+            setReviewStatus(res.error);
+            return;
+        }
+        try {
+            const check = parsePracticeCheck(res.text);
+            if (check.result === 'uncertain') {
+                setReviewStatus(check.feedback || '图片看不清，请重拍。');
+                return;
+            }
+            applyReviewAnswer(answer || '拍照作答', { isCorrect: check.result === 'correct', source: 'ai-photo', feedback: check.feedback });
+        } catch {
+            setReviewStatus('AI 批改格式不正确，请重试。');
+        }
+    };
+
+    const skipReviewMistake = () => {
+        if (!activeSession || !currentReviewMistake) return;
+        const reviewedMistakeIds = [...new Set([...(activeSession.reviewedMistakeIds || []), currentReviewMistake.id])];
+        const skippedMistakeIds = [...new Set([...(activeSession.skippedMistakeIds || []), currentReviewMistake.id])];
+        const nextSession = {
+            ...activeSession,
+            reviewedMistakeIds,
+            skippedMistakeIds,
+            updatedAt: new Date().toISOString()
+        };
+        const pendingLeft = (nextSession.mistakeIds || []).filter(id => !reviewedMistakeIds.includes(id));
+        if (!pendingLeft.length) nextSession.completedAt = new Date().toISOString();
+        setState(prev => ({
+            ...prev,
+            reviewSessions: prev.reviewSessions.map(item => item.id === activeSession.id ? nextSession : item)
+        }));
+        setAnswer('');
+        setShowReferenceAnswer(false);
+        setReviewStatus('已跳过，本轮结束后可以补做。');
     };
 
     const buildCurrentExportPayload = () => buildExportPayload(state, { ...filters, ...exportOptions });
@@ -383,26 +551,32 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
 
     const setExportCycle = (cycle) => {
         const range = getDateRangeByCycle(cycle);
-        setExportOptions(prev => ({ ...prev, cycle }));
-        setFilters(prev => ({ ...prev, ...range }));
+        setExportOptions(prev => ({ ...prev, cycle, ...range }));
     };
 
     const exportJson = () => {
         const payload = { version: 1, childName, exportedAt: new Date().toISOString(), state };
-        downloadText(`错题本-${childName}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+        downloadText(`仅错题本-${childName}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
     };
 
     const importJson = async (event) => {
         const file = event.target.files[0];
         event.target.value = '';
         if (!file) return;
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        if (!parsed.state?.mistakes) {
-            alert('备份格式不正确');
+        let parsed;
+        try {
+            parsed = JSON.parse(await file.text());
+        } catch {
+            alert('文件不是有效的 JSON 备份。');
             return;
         }
-        if (!confirm('导入会覆盖当前孩子的错题本，继续吗？')) return;
+        if (parsed.version !== 1 || !parsed.state || !Array.isArray(parsed.state.mistakes)) {
+            alert('这不是可恢复的仅错题本备份。');
+            return;
+        }
+        const sourceName = String(parsed.childName || '未命名孩子');
+        const exportedAt = parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : '未知时间';
+        if (!confirm(`准备恢复到：${childName}\n备份孩子：${sourceName}\n导出时间：${exportedAt}\n错题：${parsed.state.mistakes.length} 条\n\n继续将替换当前孩子的错题本。`)) return;
         setState(parsed.state);
     };
 
@@ -411,10 +585,14 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
             <div className="bg-white border-b border-slate-100 p-4 flex items-center justify-between">
                 <button onClick={onBack} className="text-slate-400 font-bold flex items-center gap-1"><Icon name="arrowLeft" size={18}/> 返回</button>
                 <div className="font-bold text-slate-700">{childName}的错题本</div>
-                <label className="text-orange-500 font-bold text-sm cursor-pointer">
-                    拍照录入
-                    <input type="file" className="hidden" accept="image/*" onChange={handleAiPhoto} />
-                </label>
+                {visionSupport === 'unsupported' ? (
+                    <button onClick={() => alert('当前模型未通过图片能力测试，请到系统设置中更换或测试模型。')} className="text-slate-400 font-bold text-sm">图片不可用</button>
+                ) : (
+                    <label className="text-orange-500 font-bold text-sm cursor-pointer">
+                        拍照录入
+                        <input type="file" className="hidden" accept="image/*" onChange={handleAiPhoto} />
+                    </label>
+                )}
             </div>
 
             <div className="bg-white px-4 py-2 flex gap-2 overflow-x-auto border-b border-slate-100">
@@ -432,6 +610,7 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
             {aiStatus && <div className="mx-4 mt-3 bg-indigo-50 text-indigo-600 p-3 rounded-xl text-sm font-bold">{aiStatus}</div>}
             {storyStatus && <div className="mx-4 mt-3 bg-green-50 text-green-600 p-3 rounded-xl text-sm font-bold">{storyStatus}</div>}
             {practiceStatus && <div className="mx-4 mt-3 bg-blue-50 text-blue-600 p-3 rounded-xl text-sm font-bold">{practiceStatus}</div>}
+            {reviewStatus && <div className="mx-4 mt-3 bg-sky-50 text-sky-700 p-3 rounded-xl text-sm font-bold">{reviewStatus}</div>}
 
             <div className="flex-1 overflow-y-auto p-4">
                 {tab === 'records' && (
@@ -552,6 +731,49 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
 
                 {tab === 'new' && (
                     <div className="bg-white rounded-2xl border border-slate-100 p-4 space-y-3 max-w-2xl mx-auto">
+                        {photoDrafts.length > 0 && (
+                            <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 space-y-3">
+                                <div className="font-bold text-indigo-700">识别到 {photoDrafts.length} 道错题，请确认后保存</div>
+                                <div className="space-y-2 max-h-80 overflow-y-auto">
+                                    {photoDrafts.map(item => (
+                                        <div key={item.id} className="block bg-white rounded-lg border border-indigo-100 p-3">
+                                            <div className="flex gap-2 items-start">
+                                                <input type="checkbox" checked={item.selected} onChange={e => setPhotoDrafts(prev => prev.map(current => current.id === item.id ? { ...current, selected: e.target.checked } : current))} className="mt-1" />
+                                                <div className="min-w-0 text-sm">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="font-bold text-slate-700">{item.draft.originalQuestion}</div>
+                                                        <button onClick={() => setPhotoDrafts(prev => prev.map(current => current.id === item.id ? { ...current, editing: !current.editing } : current))} className="shrink-0 text-xs text-indigo-600 font-bold">{item.editing ? '收起' : '编辑'}</button>
+                                                    </div>
+                                                    <div className="text-slate-400 mt-1">{item.draft.subject} · {item.draft.category}</div>
+                                                    {item.duplicates.length > 0 && <div className="text-orange-500 mt-1">可能与已有错题重复：{item.duplicates[0].record.originalQuestion}</div>}
+                                                    {item.editing && (
+                                                        <div className="mt-3 space-y-2">
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <select value={item.draft.subject} onChange={e => updatePhotoDraft(item.id, { subject: e.target.value })} className="p-2 rounded-lg border text-sm">
+                                                                    {SUBJECTS.map(subject => <option key={subject} value={subject}>{subject}</option>)}
+                                                                </select>
+                                                                <select value={item.draft.category} onChange={e => updatePhotoDraft(item.id, { category: e.target.value })} className="p-2 rounded-lg border text-sm">
+                                                                    {(CATEGORY_MAP[item.draft.subject] || []).map(category => <option key={category} value={category}>{category}</option>)}
+                                                                </select>
+                                                            </div>
+                                                            <textarea value={item.draft.originalQuestion} onChange={e => updatePhotoDraft(item.id, { originalQuestion: e.target.value })} className="w-full p-2 rounded-lg border text-sm" placeholder="原题" />
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <textarea value={item.draft.wrongAnswer} onChange={e => updatePhotoDraft(item.id, { wrongAnswer: e.target.value })} className="p-2 rounded-lg border text-sm" placeholder="错答" />
+                                                                <textarea value={item.draft.correctAnswer} onChange={e => updatePhotoDraft(item.id, { correctAnswer: e.target.value })} className="p-2 rounded-lg border text-sm" placeholder="正确答案" />
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button onClick={() => setPhotoDrafts([])} className="py-3 rounded-xl bg-white text-slate-500 font-bold border">取消本次导入</button>
+                                    <button onClick={savePhotoDrafts} className="py-3 rounded-xl bg-indigo-500 text-white font-bold">保存选中错题</button>
+                                </div>
+                            </div>
+                        )}
                         {duplicates.length > 0 && <div className="bg-yellow-50 text-yellow-700 p-3 rounded-xl text-sm">发现相似错题：{duplicates.map(item => item.record.originalQuestion).join('、')}</div>}
                         <div className="grid grid-cols-2 gap-3">
                             <input type="date" value={draft.recordDate} onChange={e => setField('recordDate', e.target.value)} className="p-3 rounded-xl border" />
@@ -584,10 +806,14 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
                 {tab === 'review' && (
                     <div className="space-y-4 max-w-2xl mx-auto">
                         {!activeSession && (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                <button onClick={() => startReview('today')} className="bg-green-500 text-white p-4 rounded-2xl font-bold">开始今日复习</button>
-                                <button onClick={() => startReview('need')} className="bg-orange-500 text-white p-4 rounded-2xl font-bold">复习未掌握</button>
-                                <button onClick={() => startReview('all')} className="bg-white text-slate-600 p-4 rounded-2xl font-bold border">复习全部</button>
+                            <div className="space-y-3">
+                                <div className="text-sm text-slate-500">今日待复习 {getTodayReviewMistakeIds(state).length} 题，先做一小组更轻松。</div>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                    <button onClick={() => startReview('today', 5)} className="bg-green-500 text-white p-4 rounded-2xl font-bold">今日 5 题</button>
+                                    <button onClick={() => startReview('today', 10)} className="bg-blue-500 text-white p-4 rounded-2xl font-bold">今日 10 题</button>
+                                    <button onClick={() => startReview('need')} className="bg-orange-500 text-white p-4 rounded-2xl font-bold">全部未掌握</button>
+                                    <button onClick={() => startReview('all')} className="bg-white text-slate-600 p-4 rounded-2xl font-bold border">全部错题</button>
+                                </div>
                             </div>
                         )}
                         {activeSession && (
@@ -596,9 +822,29 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
                                 {currentReviewMistake ? (
                                     <>
                                         <div className="text-xl font-bold text-slate-700">{currentReviewMistake.originalQuestion}</div>
+                                        {currentReviewMistake.storyExplanation && (
+                                            <button onClick={() => playStoryExplanation(currentReviewMistake.storyExplanation)} className="w-full py-2 rounded-xl bg-blue-50 text-blue-600 font-bold">播放故事讲解</button>
+                                        )}
+                                        {!showReferenceAnswer && currentReviewMistake.reviewTip && <div className="bg-yellow-50 rounded-xl p-3 text-sm text-yellow-700">小提示：{currentReviewMistake.reviewTip}</div>}
                                         <textarea value={answer} onChange={e => setAnswer(e.target.value)} className="w-full p-3 rounded-xl border h-24" placeholder="输入孩子复习答案" />
-                                        <div className="bg-slate-50 rounded-xl p-3 text-sm text-slate-500">参考答案：{currentReviewMistake.correctAnswer || currentReviewMistake.originalQuestion}</div>
-                                        <button onClick={submitAnswer} className="w-full py-3 rounded-xl bg-green-500 text-white font-bold">提交本题</button>
+                                        {showReferenceAnswer ? (
+                                            <div className="bg-slate-50 rounded-xl p-3 text-sm text-slate-500">参考答案：{currentReviewMistake.correctAnswer || currentReviewMistake.originalQuestion}</div>
+                                        ) : (
+                                            <button onClick={() => setShowReferenceAnswer(true)} className="w-full py-2 rounded-xl bg-slate-100 text-slate-500 text-sm font-bold">家长查看答案</button>
+                                        )}
+                                        {needsAiReview(currentReviewMistake) && <div className="text-xs text-sky-600 bg-sky-50 p-2 rounded-lg">这类题会用 AI 判断等价答案、解题过程或不同表达。</div>}
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <button onClick={skipReviewMistake} className="py-3 rounded-xl bg-slate-100 text-slate-500 font-bold">跳过本题</button>
+                                            {visionSupport === 'unsupported' ? (
+                                                <button onClick={() => setReviewStatus('当前模型未通过图片能力测试，请在系统设置中更换或测试模型。')} className="py-3 rounded-xl bg-slate-100 text-slate-400 font-bold">图片不可用</button>
+                                            ) : (
+                                                <label className={`py-3 rounded-xl bg-indigo-500 text-white font-bold text-center cursor-pointer ${reviewBusy ? 'opacity-60 pointer-events-none' : ''}`}>
+                                                    拍照提交
+                                                    <input type="file" className="hidden" accept="image/*" onChange={submitReviewPhoto} />
+                                                </label>
+                                            )}
+                                            <button onClick={submitAnswer} disabled={reviewBusy} className="py-3 rounded-xl bg-green-500 text-white font-bold disabled:opacity-60">{reviewBusy ? 'AI 判断中' : '提交本题'}</button>
+                                        </div>
                                     </>
                                 ) : (
                                     <div className="space-y-4">
@@ -655,8 +901,8 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
                                     <option value="detailed">详细讲解版</option>
                                     <option value="compact">简洁打印版</option>
                                 </select>
-                                <input type="date" value={filters.startDate} onChange={e => setFilters({ ...filters, startDate: e.target.value })} className="p-3 rounded-xl border text-sm" />
-                                <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="p-3 rounded-xl border text-sm" />
+                                <input type="date" value={exportOptions.startDate} onChange={e => setExportOptions(prev => ({ ...prev, cycle: 'custom', startDate: e.target.value }))} className="p-3 rounded-xl border text-sm" />
+                                <input type="date" value={exportOptions.endDate} onChange={e => setExportOptions(prev => ({ ...prev, cycle: 'custom', endDate: e.target.value }))} className="p-3 rounded-xl border text-sm" />
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                                 <label className="flex items-center gap-2 bg-slate-50 rounded-xl p-3">
@@ -681,9 +927,9 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
                             <button onClick={exportMarkdown} className="py-3 rounded-xl bg-orange-500 text-white font-bold">导出 Markdown</button>
                             <button onClick={exportTxt} className="py-3 rounded-xl bg-slate-700 text-white font-bold">导出 TXT</button>
                             <button onClick={exportPdf} className="py-3 rounded-xl bg-purple-500 text-white font-bold">打印/PDF</button>
-                            <button onClick={exportJson} className="py-3 rounded-xl bg-green-500 text-white font-bold">备份 JSON</button>
+                            <button onClick={exportJson} className="py-3 rounded-xl bg-green-500 text-white font-bold">仅错题本 JSON</button>
                             <label className="col-span-2 py-3 rounded-xl bg-blue-50 text-blue-600 font-bold text-center cursor-pointer">
-                                导入恢复
+                                导入仅错题本备份
                                 <input type="file" className="hidden" accept=".json,application/json" onChange={importJson} />
                             </label>
                         </div>

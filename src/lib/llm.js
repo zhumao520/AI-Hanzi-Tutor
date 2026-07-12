@@ -4,6 +4,10 @@ function normalizeOpenAIUrl(url) {
   return clean.endsWith('/v1') ? `${clean}/chat/completions` : clean;
 }
 
+function openAIModelsUrl(url) {
+  return normalizeOpenAIUrl(url).replace(/\/chat\/completions\/?$/, '/models');
+}
+
 function geminiPayloadToMessages(payload) {
   const parts = payload?.contents?.[0]?.parts || [];
   const content = parts.map(part => {
@@ -45,5 +49,33 @@ export async function callLLM({ provider, baseUrl, apiKey, model, payload }) {
     return result.text ? result : { error: "AI 没有返回内容" };
   } catch (error) {
     return { error: "网络错误" };
+  }
+}
+
+export async function listModels({ provider, baseUrl, apiKey }) {
+  if (!apiKey) return { error: '请配置 API Key' };
+
+  try {
+    const isGemini = provider === 'gemini';
+    const response = await fetch(
+      isGemini
+        ? `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
+        : openAIModelsUrl(baseUrl),
+      isGemini
+        ? { headers: { 'Content-Type': 'application/json' } }
+        : { headers: { 'Authorization': `Bearer ${apiKey}` } }
+    );
+    const data = await response.json();
+    if (!response.ok || data.error) return { error: data.error?.message || `请求失败 (${response.status})` };
+
+    const models = isGemini
+      ? (data.models || [])
+          .filter(item => item.supportedGenerationMethods?.includes('generateContent'))
+          .map(item => String(item.name || '').replace(/^models\//, ''))
+      : (data.data || []).map(item => String(item.id || ''));
+    const uniqueModels = [...new Set(models.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+    return uniqueModels.length ? { models: uniqueModels } : { error: '接口没有返回可用模型' };
+  } catch {
+    return { error: '无法拉取模型，请检查接口地址、网络或跨域设置' };
   }
 }

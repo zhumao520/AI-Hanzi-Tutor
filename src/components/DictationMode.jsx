@@ -4,15 +4,13 @@ import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
 import { getResultLabel, parseGradingResult } from '../lib/grading.js';
 import { useDictationPlayback } from '../hooks/useDictationPlayback.js';
-import { createMistake, loadNotebook, saveNotebook } from '../lib/reviewNotebook.js';
+import { loadNotebook, resolveDictationMistake, saveNotebook, upsertDictationMistake } from '../lib/reviewNotebook.js';
+import { getChildValue, setChildValue } from '../lib/childWorkspace.js';
 
 export default function DictationMode({ callLLM, addStar, voiceURI, profileId, onBack }) {
-            const wordKey = `dictation_words_${profileId}`;
-            const historyKey = `dictation_history_${profileId}`;
-            const wrongKey = `dictation_wrong_${profileId}`;
-            const [words, setWords] = useState(() => JSON.parse(localStorage.getItem(wordKey) || localStorage.getItem('dictation_words') || '["无论","船舱"]'));
-            const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem(historyKey) || '[]'));
-            const [wrongWords, setWrongWords] = useState(() => JSON.parse(localStorage.getItem(wrongKey) || '[]'));
+            const [words, setWords] = useState(() => getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
+            const [history, setHistory] = useState(() => getChildValue(profileId, 'dictationHistory', []));
+            const [wrongWords, setWrongWords] = useState(() => getChildValue(profileId, 'dictationWrong', []));
             const [idx, setIdx] = useState(0);
             const [status, setStatus] = useState('idle');
             const [feedback, setFeedback] = useState('');
@@ -20,6 +18,8 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
             const [lastCheckedWord, setLastCheckedWord] = useState('');
             const [showHint, setShowHint] = useState(false);
             const [hintCount, setHintCount] = useState(0); // 记录查看次数
+            const [finished, setFinished] = useState(false);
+            const [sessionResults, setSessionResults] = useState([]);
             const recognitionRef = useRef(null);
             const idxRef = useRef(idx);
             const { stopEverything, startPlay, requestAutoPlay, toggleHint } = useDictationPlayback({
@@ -34,17 +34,19 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
             });
 
             useEffect(() => {
-                setWords(JSON.parse(localStorage.getItem(wordKey) || localStorage.getItem('dictation_words') || '["无论","船舱"]'));
-                setHistory(JSON.parse(localStorage.getItem(historyKey) || '[]'));
-                setWrongWords(JSON.parse(localStorage.getItem(wrongKey) || '[]'));
+                setWords(getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
+                setHistory(getChildValue(profileId, 'dictationHistory', []));
+                setWrongWords(getChildValue(profileId, 'dictationWrong', []));
                 setIdx(0);
                 setFeedback('');
                 setGradeResult('');
                 setLastCheckedWord('');
-            }, [historyKey, wordKey, wrongKey]);
-            useEffect(() => localStorage.setItem(wordKey, JSON.stringify(words)), [wordKey, words]);
-            useEffect(() => localStorage.setItem(historyKey, JSON.stringify(history)), [historyKey, history]);
-            useEffect(() => localStorage.setItem(wrongKey, JSON.stringify(wrongWords)), [wrongKey, wrongWords]);
+                setFinished(false);
+                setSessionResults([]);
+            }, [profileId]);
+            useEffect(() => setChildValue(profileId, 'dictationWords', words), [profileId, words]);
+            useEffect(() => setChildValue(profileId, 'dictationHistory', history), [history, profileId]);
+            useEffect(() => setChildValue(profileId, 'dictationWrong', wrongWords), [profileId, wrongWords]);
             useEffect(() => { idxRef.current = idx; }, [idx]);
 
             // 新增：全屏触控唤醒 (极简版)
@@ -86,16 +88,47 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                     setFeedback(''); 
                     setGradeResult('');
                     requestAutoPlay(); // 标记翻页后自动播放
-                } else alert("完成！"); 
+                } else {
+                    stopEverything();
+                    setFinished(true);
+                }
+            };
+
+            const restartSession = () => {
+                stopEverything();
+                setIdx(0);
+                setStatus('idle');
+                setFeedback('');
+                setGradeResult('');
+                setLastCheckedWord('');
+                setFinished(false);
+                setSessionResults([]);
+            };
+
+            const practiceWrongFromSummary = () => {
+                if (!wrongWords.length) {
+                    alert('还没有错题');
+                    return;
+                }
+                stopEverything();
+                setWords(wrongWords);
+                setIdx(0);
+                setStatus('idle');
+                setFeedback('');
+                setGradeResult('');
+                setLastCheckedWord('');
+                setFinished(false);
+                setSessionResults([]);
             };
 
             const saveHistory = (word, result, text) => {
                 const record = { id: Date.now(), word, result, feedback: text || '', createdAt: new Date().toISOString() };
                 setHistory(prev => [record, ...prev].slice(0, 80));
+                setSessionResults(prev => [...prev, { word, result }]);
                 if (result === 'wrong') {
                     setWrongWords(prev => prev.includes(word) ? prev : [word, ...prev].slice(0, 80));
                     const notebook = loadNotebook(profileId);
-                    const saved = createMistake(notebook, {
+                    const saved = upsertDictationMistake(notebook, {
                         subject: '语文',
                         category: '错别字',
                         originalQuestion: `听写词语：${word}`,
@@ -103,10 +136,13 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         correctAnswer: word,
                         analysis: text || '听写时没有正确写出目标词语。',
                         reviewTip: '下次先看一遍字形，再遮住重写。',
-                        source: 'dictation',
-                        status: '需再次复习',
+                        sourceKey: `dictation:zh:${word}`,
                         tags: ['听写']
                     });
+                    if (saved.ok) saveNotebook(profileId, saved.state);
+                } else if (result === 'correct') {
+                    const notebook = loadNotebook(profileId);
+                    const saved = resolveDictationMistake(notebook, `dictation:zh:${word}`, text);
                     if (saved.ok) saveNotebook(profileId, saved.state);
                 }
             };
@@ -149,7 +185,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         setWrongWords(prev => prev.filter(item => item !== checkedWord));
                         addStar();
                     }
-                    playAudio(parsed.feedback);
+                    playAudio(parsed.feedback, voiceURI);
                 }
             };
 
@@ -243,6 +279,8 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 setStatus('idle');
                 setFeedback('');
                 setGradeResult('');
+                setFinished(false);
+                setSessionResults([]);
             };
 
             const clearWrongWords = () => {
@@ -254,6 +292,46 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 if (!history.length) return;
                 if (confirm('清空听写历史？')) setHistory([]);
             };
+
+            const correctCount = sessionResults.filter(item => item.result === 'correct').length;
+            const wrongCount = sessionResults.filter(item => item.result === 'wrong').length;
+            const uncertainCount = sessionResults.filter(item => item.result === 'uncertain').length;
+
+            if (finished) {
+                return (
+                    <div className="h-full flex flex-col p-4 bg-slate-50 relative overflow-y-auto">
+                        <div className="flex justify-between items-center mb-6">
+                            <button onClick={onBack} className="text-slate-400 font-bold"><Icon name="arrowLeft" size={20}/></button>
+                            <div className="text-slate-500 font-bold">听写总结</div>
+                            <div className="w-5" />
+                        </div>
+                        <div className="bg-white rounded-2xl border border-slate-100 p-5 space-y-4">
+                            <div className="text-center">
+                                <div className="text-3xl font-bold text-slate-800 mb-2">本轮完成</div>
+                                <div className="text-sm text-slate-400">共 {words.length} 个词</div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-center">
+                                <div className="bg-green-50 rounded-xl p-3"><div className="text-2xl font-bold text-green-600">{correctCount}</div><div className="text-xs text-green-500">正确</div></div>
+                                <div className="bg-red-50 rounded-xl p-3"><div className="text-2xl font-bold text-red-500">{wrongCount}</div><div className="text-xs text-red-400">错误</div></div>
+                                <div className="bg-yellow-50 rounded-xl p-3"><div className="text-2xl font-bold text-yellow-600">{uncertainCount}</div><div className="text-xs text-yellow-500">待确认</div></div>
+                            </div>
+                            {wrongWords.length > 0 && (
+                                <div>
+                                    <div className="font-bold text-slate-700 mb-2">错词</div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {wrongWords.slice(0, 20).map(word => <span key={word} className="px-2 py-1 rounded-full bg-red-50 text-red-500 text-xs">{word}</span>)}
+                                    </div>
+                                </div>
+                            )}
+                            <div className="grid grid-cols-1 gap-3">
+                                <button onClick={practiceWrongFromSummary} className="py-3 rounded-xl bg-orange-500 text-white font-bold">错词再练</button>
+                                <button onClick={restartSession} className="py-3 rounded-xl bg-blue-500 text-white font-bold">再听一轮</button>
+                                <button onClick={onBack} className="py-3 rounded-xl bg-slate-100 text-slate-500 font-bold">回首页</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div 

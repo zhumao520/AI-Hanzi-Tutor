@@ -1,0 +1,164 @@
+const DB_NAME = 'ai_hanzi_tutor';
+const STORE_NAME = 'child_workspaces';
+const DB_VERSION = 1;
+const cache = new Map();
+const loading = new Map();
+
+const legacyFields = {
+    stars: { scoped: id => `app_stars_${id}`, legacy: 'app_stars', parse: value => String(value || '0') },
+    hanziCards: { scoped: id => `hanzi_cards_${id}`, legacy: 'hanzi_cards' },
+    dictationWords: { scoped: id => `dictation_words_${id}`, legacy: 'dictation_words' },
+    dictationHistory: { scoped: id => `dictation_history_${id}` },
+    dictationWrong: { scoped: id => `dictation_wrong_${id}` },
+    reviewNotebook: { scoped: id => `review_notebook_${id}` },
+    englishDictationItems: { scoped: id => `english_dictation_items_${id}` },
+    englishWrongItems: { scoped: id => `english_wrong_items_${id}` },
+    englishDictationHistory: { scoped: id => `english_dictation_history_${id}` },
+    englishConversationHistory: { scoped: id => `english_conversation_history_${id}` },
+    studyReminder: { scoped: id => `study_reminder_${id}` }
+};
+
+function clone(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function parseLegacyValue(raw, field) {
+    if (raw === null) return undefined;
+    if (field.parse) return field.parse(raw);
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return undefined;
+    }
+}
+
+function migrateLegacyWorkspace(profileId) {
+    const data = {};
+    Object.entries(legacyFields).forEach(([key, field]) => {
+        const scoped = parseLegacyValue(localStorage.getItem(field.scoped(profileId)), field);
+        if (scoped !== undefined) {
+            data[key] = scoped;
+            return;
+        }
+        if (profileId === 'default' && field.legacy) {
+            const legacy = parseLegacyValue(localStorage.getItem(field.legacy), field);
+            if (legacy !== undefined) data[key] = legacy;
+        }
+    });
+    return data;
+}
+
+function fallbackKey(profileId) {
+    return `child_workspace_v2_${profileId}`;
+}
+
+function openDatabase() {
+    if (!('indexedDB' in window)) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => {
+            if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+                request.result.createObjectStore(STORE_NAME, { keyPath: 'profileId' });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function readWorkspace(profileId) {
+    const db = await openDatabase();
+    if (!db) {
+        try { return JSON.parse(localStorage.getItem(fallbackKey(profileId)) || 'null'); } catch { return null; }
+    }
+    return new Promise((resolve, reject) => {
+        const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(profileId);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function writeWorkspace(workspace) {
+    const db = await openDatabase();
+    if (!db) {
+        localStorage.setItem(fallbackKey(workspace.profileId), JSON.stringify(workspace));
+        return;
+    }
+    await new Promise((resolve, reject) => {
+        const request = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(workspace);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function persist(profileId) {
+    const workspace = cache.get(profileId);
+    if (!workspace) return;
+    workspace.updatedAt = new Date().toISOString();
+    writeWorkspace(clone(workspace)).catch(() => {});
+}
+
+export async function hydrateChildWorkspace(profileId) {
+    if (cache.has(profileId)) return cache.get(profileId);
+    if (loading.has(profileId)) return loading.get(profileId);
+
+    const task = (async () => {
+        let workspace = await readWorkspace(profileId);
+        if (!workspace) {
+            workspace = {
+                profileId,
+                schemaVersion: 2,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                data: migrateLegacyWorkspace(profileId)
+            };
+            await writeWorkspace(workspace);
+        }
+        const normalized = {
+            profileId,
+            schemaVersion: 2,
+            createdAt: workspace.createdAt || new Date().toISOString(),
+            updatedAt: workspace.updatedAt || new Date().toISOString(),
+            data: workspace.data && typeof workspace.data === 'object' ? workspace.data : {}
+        };
+        cache.set(profileId, normalized);
+        loading.delete(profileId);
+        return normalized;
+    })();
+    loading.set(profileId, task);
+    return task;
+}
+
+export function getChildValue(profileId, key, fallback) {
+    const workspace = cache.get(profileId);
+    if (!workspace || !hasOwn(workspace.data, key)) return clone(fallback);
+    return clone(workspace.data[key]);
+}
+
+export function setChildValue(profileId, key, value) {
+    const workspace = cache.get(profileId);
+    if (!workspace) return;
+    workspace.data[key] = clone(value);
+    persist(profileId);
+}
+
+export function getChildWorkspaceData(profileId) {
+    return clone(cache.get(profileId)?.data || {});
+}
+
+export async function replaceChildWorkspaceData(profileId, data) {
+    const workspace = {
+        profileId,
+        schemaVersion: 2,
+        createdAt: cache.get(profileId)?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        data: clone(data || {})
+    };
+    cache.set(profileId, workspace);
+    await writeWorkspace(workspace);
+    return workspace;
+}
