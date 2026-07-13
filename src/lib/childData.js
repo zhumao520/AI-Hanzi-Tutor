@@ -9,7 +9,8 @@ const ARRAY_FIELDS = [
     'englishDictationItems',
     'englishWrongItems',
     'englishDictationHistory',
-    'englishConversationHistory'
+    'englishConversationHistory',
+    'assignments'
 ];
 
 function countItems(value) {

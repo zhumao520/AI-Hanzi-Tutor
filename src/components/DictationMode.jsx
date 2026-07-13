@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
-import { getResultLabel, parseGradingResult } from '../lib/grading.js';
+import { getResultLabel, requestStructuredGrading } from '../lib/grading.js';
 import { useDictationPlayback } from '../hooks/useDictationPlayback.js';
 import { loadNotebook, resolveDictationMistake, saveNotebook, upsertDictationMistake } from '../lib/reviewNotebook.js';
 import { getChildValue, setChildValue } from '../lib/childWorkspace.js';
+import { getActiveAssignment, recordAssignmentAttempt } from '../lib/assignments.js';
 
 export default function DictationMode({ callLLM, addStar, voiceURI, profileId, onBack }) {
-            const [words, setWords] = useState(() => getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
+            const assignment = getActiveAssignment(profileId);
+            const assignmentWords = assignment?.subject === 'chineseDictation' ? assignment.items : null;
+            const [words, setWords] = useState(() => assignmentWords?.length ? assignmentWords : getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
             const [history, setHistory] = useState(() => getChildValue(profileId, 'dictationHistory', []));
             const [wrongWords, setWrongWords] = useState(() => getChildValue(profileId, 'dictationWrong', []));
             const [idx, setIdx] = useState(0);
@@ -34,7 +37,8 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
             });
 
             useEffect(() => {
-                setWords(getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
+                const currentAssignment = getActiveAssignment(profileId);
+                setWords(currentAssignment?.subject === 'chineseDictation' && currentAssignment.items.length ? currentAssignment.items : getChildValue(profileId, 'dictationWords', ['无论', '船舱']));
                 setHistory(getChildValue(profileId, 'dictationHistory', []));
                 setWrongWords(getChildValue(profileId, 'dictationWrong', []));
                 setIdx(0);
@@ -121,10 +125,13 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 setSessionResults([]);
             };
 
-            const saveHistory = (word, result, text) => {
-                const record = { id: Date.now(), word, result, feedback: text || '', createdAt: new Date().toISOString() };
+            const saveHistory = (word, grading) => {
+                const { result, feedback, confidence, evidence, transcription, errorDetails } = grading;
+                const sourceKey = `dictation:zh:${assignment?.id || 'library'}:${word}`;
+                const record = { id: Date.now(), assignmentId: assignment?.id || null, word, result, feedback, confidence, evidence, transcription, errorDetails, createdAt: new Date().toISOString() };
                 setHistory(prev => [record, ...prev].slice(0, 80));
                 setSessionResults(prev => [...prev, { word, result }]);
+                if (assignment?.id) recordAssignmentAttempt(profileId, assignment.id, { item: word, result, feedback, confidence, evidence, type: 'dictation' });
                 if (result === 'wrong') {
                     setWrongWords(prev => prev.includes(word) ? prev : [word, ...prev].slice(0, 80));
                     const notebook = loadNotebook(profileId);
@@ -134,29 +141,36 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         originalQuestion: `听写词语：${word}`,
                         wrongAnswer: '拍照批改未通过',
                         correctAnswer: word,
-                        analysis: text || '听写时没有正确写出目标词语。',
+                        analysis: errorDetails.join('；') || '听写时没有正确写出目标词语。',
                         reviewTip: '下次先看一遍字形，再遮住重写。',
-                        sourceKey: `dictation:zh:${word}`,
+                        sourceKey,
+                        assignmentId: assignment?.id || '',
+                        assignmentTitle: assignment?.title || '',
+                        gradingResult: result,
+                        gradingEvidence: evidence,
+                        gradingConfidence: confidence,
+                        gradingTranscription: transcription,
+                        gradingErrorDetails: errorDetails,
                         tags: ['听写']
                     });
                     if (saved.ok) saveNotebook(profileId, saved.state);
                 } else if (result === 'correct') {
                     const notebook = loadNotebook(profileId);
-                    const saved = resolveDictationMistake(notebook, `dictation:zh:${word}`, text);
+                    const saved = resolveDictationMistake(notebook, sourceKey, feedback);
                     if (saved.ok) saveNotebook(profileId, saved.state);
                 }
             };
 
             const markWrong = () => {
                 const word = lastCheckedWord || words[idx];
-                saveHistory(word, 'wrong', feedback);
+                saveHistory(word, { result: 'wrong', feedback: feedback || '家长确认这次需要复习。', confidence: 'high', evidence: '家长手动确认。', transcription: '', errorDetails: ['家长手动标记为错误'] });
                 setGradeResult('wrong');
                 alert(`已加入错题：${word}`);
             };
 
             const markCorrect = () => {
                 const word = lastCheckedWord || words[idx];
-                saveHistory(word, 'correct', feedback);
+                saveHistory(word, { result: 'correct', feedback: feedback || '家长确认这次写对了。', confidence: 'high', evidence: '家长手动确认。', transcription: '', errorDetails: [] });
                 setWrongWords(prev => prev.filter(item => item !== word));
                 setGradeResult('correct');
                 alert(`已记录通过：${word}`);
@@ -167,20 +181,26 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 const checkedWord = words[idx];
                 setStatus('grading'); setFeedback('👀 批改中...');
                 const base64 = await compressImage(file);
-                const res = await callLLM({ contents: [{ parts: [{ text: `检查作业是否正确写出了词语“${checkedWord}”。
+                const prompt = `检查作业是否正确写出了词语“${checkedWord}”。
 请只返回 JSON，不要 Markdown，不要代码块：
-{"result":"correct|wrong|uncertain","feedback":"给5岁小朋友的一句话温柔点评"}
+{"schemaVersion":1,"result":"correct|wrong|uncertain","confidence":"high|medium|low","transcription":"图片中识别到的孩子书写，无法识别则空","evidence":"判断依据","errorDetails":["具体错字或错误，正确时为空数组"],"feedback":"给5岁小朋友的一句话温柔点评"}
 判断规则：
 - 清楚写对目标词语，result 为 correct
 - 明显没写、写错字、少字、多字，result 为 wrong
-- 图片模糊、遮挡、无法判断，result 为 uncertain` }, { inlineData: { mimeType: "image/jpeg", data: base64 } }] }] });
+- 图片模糊、遮挡、无法判断，result 为 uncertain`;
+                const res = await requestStructuredGrading(callLLM, [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }]);
                 setStatus('listening');
                 setLastCheckedWord(checkedWord);
-                if(res.text) {
-                    const parsed = parseGradingResult(res.text);
+                if (res.error) {
+                    setGradeResult('uncertain');
+                    setFeedback(res.error);
+                    return;
+                }
+                if (res.grading) {
+                    const parsed = res.grading;
                     setGradeResult(parsed.result);
                     setFeedback(parsed.feedback);
-                    saveHistory(checkedWord, parsed.result, parsed.feedback);
+                    saveHistory(checkedWord, parsed);
                     if (parsed.result === 'correct') {
                         setWrongWords(prev => prev.filter(item => item !== checkedWord));
                         addStar();

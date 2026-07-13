@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getTodayReviewMistakeIds, loadNotebook } from '../lib/reviewNotebook.js';
 import { getChildValue } from '../lib/childWorkspace.js';
+import { getActiveAssignment } from '../lib/assignments.js';
 
 export default function HomeView({ setMode, profiles, activeProfileId, setActiveProfileId }) {
     const [tick, setTick] = useState(0);
@@ -15,11 +16,13 @@ export default function HomeView({ setMode, profiles, activeProfileId, setActive
         const chineseWrong = getChildValue(activeProfileId, 'dictationWrong', []);
         const englishWrong = getChildValue(activeProfileId, 'englishWrongItems', []);
         const stars = getChildValue(activeProfileId, 'stars', '0');
+        const assignment = getActiveAssignment(activeProfileId);
         return {
             pendingReview,
             chineseWrongCount: Array.isArray(chineseWrong) ? chineseWrong.length : 0,
             englishWrongCount: Array.isArray(englishWrong) ? englishWrong.length : 0,
-            stars: parseInt(stars || '0', 10) || 0
+            stars: parseInt(stars || '0', 10) || 0,
+            assignment
         };
     }, [activeProfileId, tick]);
 
@@ -72,6 +75,13 @@ export default function HomeView({ setMode, profiles, activeProfileId, setActive
             <div className="text-center mt-6 md:mt-10 mb-6 md:mb-10">
                 <h1 className="text-3xl md:text-5xl font-bold text-slate-800 mb-3 md:mb-4 tracking-tight">学习时间到！</h1>
                 <p className="text-slate-400 text-sm md:text-lg">今天也要做个棒棒的小朋友</p>
+            </div>
+
+            <div className="w-full max-w-5xl mx-auto mb-5">
+                <button onClick={() => setMode('assignments')} className="w-full text-left bg-white border border-orange-100 shadow-sm rounded-2xl p-4 flex items-center justify-between gap-3">
+                    <div><div className="text-xs text-orange-500 font-bold mb-1">当前作业</div><div className="font-bold text-slate-700">{dashboard.assignment?.title || '还没有选择作业'}</div><div className="text-xs text-slate-400 mt-1">{dashboard.assignment ? `${dashboard.assignment.items.length} 项内容，进入学习模式后将逐步绑定。` : '先为这个孩子新建一份中文或英文听写作业。'}</div></div>
+                    <span className="text-orange-500 font-bold text-sm shrink-0">管理 →</span>
+                </button>
             </div>
 
             <div className="w-full max-w-5xl mx-auto mb-8">

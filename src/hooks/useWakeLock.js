@@ -1,17 +1,17 @@
 import { useEffect, useRef } from 'react';
 
-export function useWakeLock() {
+export function useWakeLock(enabled) {
     const wakeLockRef = useRef(null);
 
     useEffect(() => {
         const requestWakeLock = async () => {
+            if (!enabled || document.visibilityState !== 'visible' || wakeLockRef.current) return;
             try {
                 if ('wakeLock' in navigator) {
                     wakeLockRef.current = await navigator.wakeLock.request('screen');
-                    console.log('✨ 屏幕常亮已激活');
                 }
             } catch (err) {
-                console.log('常亮失败:', err);
+                console.warn('屏幕常亮不可用:', err);
             }
         };
 
@@ -19,12 +19,15 @@ export function useWakeLock() {
             if (document.visibilityState === 'visible') requestWakeLock();
         };
 
-        requestWakeLock();
+        if (enabled) requestWakeLock();
         document.addEventListener('visibilitychange', handleVisibility);
 
         return () => {
             document.removeEventListener('visibilitychange', handleVisibility);
-            if (wakeLockRef.current) wakeLockRef.current.release();
+            if (wakeLockRef.current) {
+                wakeLockRef.current.release();
+                wakeLockRef.current = null;
+            }
         };
-    }, []);
+    }, [enabled]);
 }

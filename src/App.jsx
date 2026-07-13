@@ -8,10 +8,11 @@ import DictationMode from './components/DictationMode.jsx';
 import ReviewNotebookView from './components/ReviewNotebookView.jsx';
 import EnglishDictationMode from './components/EnglishDictationMode.jsx';
 import EnglishConversationMode from './components/EnglishConversationMode.jsx';
+import AssignmentsView from './components/AssignmentsView.jsx';
 import { useLocalStorageState } from './hooks/useLocalStorageState.js';
 import { useWakeLock } from './hooks/useWakeLock.js';
 import { collectChildData, describeChildBackup, downloadJson, parseChildBackup, restoreChildData } from './lib/childData.js';
-import { getChildValue, hydrateChildWorkspace, setChildValue } from './lib/childWorkspace.js';
+import { getChildValue, getChildWorkspaceStatus, hydrateChildWorkspace, retryChildWorkspace, setChildValue } from './lib/childWorkspace.js';
 import { loadReminder, notifyStudyReminder, shouldNotify } from './lib/reminder.js';
 
 export default function App() {
@@ -30,8 +31,11 @@ export default function App() {
     const [voiceURI, setVoiceURI] = useLocalStorageState('app_voice_uri', 'auto');
     const [englishVoiceURI, setEnglishVoiceURI] = useLocalStorageState('app_english_voice_uri', 'auto');
     const [workspaceReady, setWorkspaceReady] = useState(false);
+    const [workspaceError, setWorkspaceError] = useState('');
+    const [workspaceVersion, setWorkspaceVersion] = useState(0);
+    const [saveStatus, setSaveStatus] = useState({ state: 'idle' });
 
-    useWakeLock();
+    useWakeLock(['dictation', 'englishDictation', 'englishConversation'].includes(mode));
 
     const activeProfile = profiles.find(profile => profile.id === activeProfileId) || profiles[0];
     const profileId = activeProfile?.id || 'default';
@@ -39,9 +43,10 @@ export default function App() {
     useEffect(() => {
         let active = true;
         setWorkspaceReady(false);
+        setWorkspaceError('');
         hydrateChildWorkspace(profileId)
             .then(() => { if (active) setWorkspaceReady(true); })
-            .catch(() => { if (active) setWorkspaceReady(true); });
+            .catch(() => { if (active) setWorkspaceError('孩子数据无法读取，请检查浏览器存储权限后重试。'); });
         return () => { active = false; };
     }, [profileId]);
 
@@ -60,6 +65,14 @@ export default function App() {
     }, [profileId, workspaceReady]);
 
     useEffect(() => {
+        if (!workspaceReady) return undefined;
+        const updateStatus = () => setSaveStatus(getChildWorkspaceStatus(profileId));
+        updateStatus();
+        const timer = window.setInterval(updateStatus, 1000);
+        return () => window.clearInterval(timer);
+    }, [profileId, workspaceReady]);
+
+    useEffect(() => {
         if (workspaceReady) setChildValue(profileId, 'stars', stars);
     }, [profileId, stars, workspaceReady]);
 
@@ -75,6 +88,10 @@ export default function App() {
     }, [activeProfile?.name, profileId, workspaceReady]);
 
     const addStar = () => setStars(s => String(parseInt(s || '0') + 1));
+    const retrySave = async () => {
+        await retryChildWorkspace(profileId);
+        setSaveStatus(getChildWorkspaceStatus(profileId));
+    };
     const callLLM = (payload) => requestLLM({ provider, baseUrl, apiKey, model, payload });
     const addProfile = (name) => {
         const trimmedName = name.trim();
@@ -138,6 +155,7 @@ export default function App() {
                     <span className="font-bold text-slate-700 text-lg md:text-xl tracking-tight">AI全能识字</span>
                 </div>
                 <div className="flex items-center gap-4">
+                    {saveStatus.state === 'error' && <button onClick={retrySave} className="text-xs font-bold text-red-500 bg-red-50 border border-red-100 px-2 py-1 rounded-lg">保存失败，重试</button>}
                     <div className="bg-yellow-100 text-yellow-700 px-4 py-1.5 rounded-full text-sm font-bold flex items-center gap-1.5 shadow-sm border border-yellow-200">
                         <Icon name="star" size={16} className="fill-yellow-500 text-yellow-500"/> <span className="pt-0.5">{parseInt(stars || '0')}</span>
                     </div>
@@ -145,9 +163,11 @@ export default function App() {
                 </div>
             </header>
             <div className="flex-1 overflow-hidden relative flex flex-col">
-                {mode === 'home' && <HomeView setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
+                {mode === 'home' && <HomeView key={`${profileId}-${workspaceVersion}`} setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
                 {!workspaceReady && mode !== 'home' && <div className="flex-1 flex items-center justify-center text-slate-400 font-bold">正在加载孩子的数据...</div>}
+                {workspaceError && <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-500 font-bold p-6 text-center"><div>{workspaceError}</div><button onClick={() => window.location.reload()} className="px-4 py-2 bg-orange-500 text-white rounded-xl">重新加载</button></div>}
                 {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'assignments' && <AssignmentsView profileId={profileId} onChanged={() => setWorkspaceVersion(version => version + 1)} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'review' && <ReviewNotebookView callLLM={callLLM} profile={activeProfile} voiceURI={voiceURI} onBack={() => setMode('home')} />}

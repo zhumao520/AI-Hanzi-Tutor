@@ -4,6 +4,7 @@ import MathDiagram from './MathDiagram.jsx';
 import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
 import { getActiveVisionSupport } from '../lib/aiCapabilities.js';
+import { getActiveAssignment } from '../lib/assignments.js';
 import { buildStoryPrompt, formatStoryForSpeech, parseStoryExplanation } from '../lib/storyExplanation.js';
 import { buildPhotoCheckPrompt, buildPracticePrompt, buildTextCheckPrompt, formatPracticeForSpeech, parsePracticeCheck, parsePracticeResponse } from '../lib/transferPractice.js';
 import {
@@ -84,6 +85,7 @@ function buildReviewCheckPrompt(record, childAnswer) {
 export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack }) {
     const profileId = profile?.id || 'default';
     const childName = profile?.name || '孩子';
+    const assignment = getActiveAssignment(profileId);
     const [state, setState] = useState(() => loadNotebook(profileId));
     const [tab, setTab] = useState('records');
     const [draft, setDraft] = useState(() => ({ ...emptyDraft, recordDate: today() }));
@@ -361,7 +363,7 @@ JSON 格式：
             }
             setPhotoDrafts(parsed.map((item, index) => ({
                 id: `photo_${Date.now()}_${index}`,
-                draft: { ...item, source: 'photo' },
+                draft: { ...item, source: 'photo', assignmentId: assignment?.id || '', assignmentTitle: assignment?.title || '' },
                 selected: true,
                 duplicates: detectDuplicates(state, item)
             })));

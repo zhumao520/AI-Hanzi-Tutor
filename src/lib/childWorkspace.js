@@ -3,6 +3,8 @@ const STORE_NAME = 'child_workspaces';
 const DB_VERSION = 1;
 const cache = new Map();
 const loading = new Map();
+const writeQueues = new Map();
+const writeStatus = new Map();
 
 const legacyFields = {
     stars: { scoped: id => `app_stars_${id}`, legacy: 'app_stars', parse: value => String(value || '0') },
@@ -89,17 +91,36 @@ async function writeWorkspace(workspace) {
         return;
     }
     await new Promise((resolve, reject) => {
-        const request = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(workspace);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
+        const transaction = db.transaction(STORE_NAME, 'readwrite');
+        transaction.objectStore(STORE_NAME).put(workspace);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error || new Error('数据保存被中止。'));
     });
 }
 
 function persist(profileId) {
     const workspace = cache.get(profileId);
-    if (!workspace) return;
+    if (!workspace) return Promise.resolve();
     workspace.updatedAt = new Date().toISOString();
-    writeWorkspace(clone(workspace)).catch(() => {});
+    workspace.revision = (workspace.revision || 0) + 1;
+    const snapshot = clone(workspace);
+    const previous = writeQueues.get(profileId) || Promise.resolve();
+    const task = previous
+        .catch(() => {})
+        .then(() => writeWorkspace(snapshot))
+        .then(() => {
+            const status = writeStatus.get(profileId);
+            if (!status || status.revision <= snapshot.revision) {
+                writeStatus.set(profileId, { state: 'saved', revision: snapshot.revision, error: null });
+            }
+        })
+        .catch(error => {
+            writeStatus.set(profileId, { state: 'error', revision: snapshot.revision, error });
+            return { ok: false, error };
+        });
+    writeQueues.set(profileId, task);
+    return task;
 }
 
 export async function hydrateChildWorkspace(profileId) {
@@ -107,27 +128,33 @@ export async function hydrateChildWorkspace(profileId) {
     if (loading.has(profileId)) return loading.get(profileId);
 
     const task = (async () => {
-        let workspace = await readWorkspace(profileId);
-        if (!workspace) {
-            workspace = {
+        try {
+            let workspace = await readWorkspace(profileId);
+            if (!workspace) {
+                workspace = {
+                    profileId,
+                    schemaVersion: 2,
+                    revision: 0,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    data: migrateLegacyWorkspace(profileId)
+                };
+                await writeWorkspace(workspace);
+            }
+            const normalized = {
                 profileId,
                 schemaVersion: 2,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                data: migrateLegacyWorkspace(profileId)
+                revision: Number.isInteger(workspace.revision) ? workspace.revision : 0,
+                createdAt: workspace.createdAt || new Date().toISOString(),
+                updatedAt: workspace.updatedAt || new Date().toISOString(),
+                data: workspace.data && typeof workspace.data === 'object' ? workspace.data : {}
             };
-            await writeWorkspace(workspace);
+            cache.set(profileId, normalized);
+            writeStatus.set(profileId, { state: 'saved', revision: normalized.revision, error: null });
+            return normalized;
+        } finally {
+            loading.delete(profileId);
         }
-        const normalized = {
-            profileId,
-            schemaVersion: 2,
-            createdAt: workspace.createdAt || new Date().toISOString(),
-            updatedAt: workspace.updatedAt || new Date().toISOString(),
-            data: workspace.data && typeof workspace.data === 'object' ? workspace.data : {}
-        };
-        cache.set(profileId, normalized);
-        loading.delete(profileId);
-        return normalized;
     })();
     loading.set(profileId, task);
     return task;
@@ -143,7 +170,20 @@ export function setChildValue(profileId, key, value) {
     const workspace = cache.get(profileId);
     if (!workspace) return;
     workspace.data[key] = clone(value);
-    persist(profileId);
+    return persist(profileId);
+}
+
+export function getChildWorkspaceStatus(profileId) {
+    const status = writeStatus.get(profileId);
+    return status ? { ...status } : { state: 'idle', revision: 0, error: null };
+}
+
+export async function flushChildWorkspace(profileId) {
+    await (writeQueues.get(profileId) || Promise.resolve());
+}
+
+export function retryChildWorkspace(profileId) {
+    return persist(profileId);
 }
 
 export function getChildWorkspaceData(profileId) {
@@ -156,9 +196,11 @@ export async function replaceChildWorkspaceData(profileId, data) {
         schemaVersion: 2,
         createdAt: cache.get(profileId)?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        revision: (cache.get(profileId)?.revision || 0) + 1,
         data: clone(data || {})
     };
     cache.set(profileId, workspace);
-    await writeWorkspace(workspace);
+    const result = await persist(profileId);
+    if (result?.ok === false) throw result.error;
     return workspace;
 }

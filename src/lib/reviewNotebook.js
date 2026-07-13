@@ -169,6 +169,16 @@ export function normalizeDraft(input = {}) {
         reviewTip: String(input.reviewTip || '').trim(),
         source: SOURCES.includes(input.source) ? input.source : 'manual',
         sourceKey: String(input.sourceKey || '').trim(),
+        assignmentId: String(input.assignmentId || '').trim(),
+        assignmentTitle: String(input.assignmentTitle || '').trim(),
+        lastDictationResult: String(input.lastDictationResult || '').trim(),
+        lastDictationFeedback: String(input.lastDictationFeedback || '').trim(),
+        lastDictationAt: String(input.lastDictationAt || '').trim(),
+        gradingResult: String(input.gradingResult || '').trim(),
+        gradingEvidence: String(input.gradingEvidence || '').trim(),
+        gradingConfidence: String(input.gradingConfidence || '').trim(),
+        gradingTranscription: String(input.gradingTranscription || '').trim(),
+        gradingErrorDetails: ensureArray(input.gradingErrorDetails).map(item => String(item).trim()).filter(Boolean),
         status: STATUSES.includes(input.status) ? input.status : '未复习',
         tags: normalizeTags(input.tags)
     };

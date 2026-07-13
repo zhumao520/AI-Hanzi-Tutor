@@ -3,9 +3,10 @@ import Icon from './Icon.jsx';
 import { playAudio } from '../lib/audio.js';
 import { compressImage } from '../lib/image.js';
 import { getActiveVisionSupport } from '../lib/aiCapabilities.js';
-import { getResultLabel, parseGradingResult } from '../lib/grading.js';
+import { getResultLabel, requestStructuredGrading } from '../lib/grading.js';
 import { loadNotebook, resolveDictationMistake, saveNotebook, upsertDictationMistake } from '../lib/reviewNotebook.js';
 import { getChildValue, setChildValue } from '../lib/childWorkspace.js';
+import { getActiveAssignment, recordAssignmentAttempt } from '../lib/assignments.js';
 
 const DEFAULT_ITEMS = [
     { text: 'apple', meaning: '苹果', type: 'word' },
@@ -32,7 +33,9 @@ function parseEnglishItems(text) {
 }
 
 export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedbackVoiceURI, profileId, onBack }) {
-    const [items, setItems] = useState(() => getChildValue(profileId, 'englishDictationItems', DEFAULT_ITEMS));
+    const assignment = getActiveAssignment(profileId);
+    const assignmentItems = assignment?.subject === 'englishDictation' ? parseEnglishItems(assignment.items.join('\n')) : null;
+    const [items, setItems] = useState(() => assignmentItems?.length ? assignmentItems : getChildValue(profileId, 'englishDictationItems', DEFAULT_ITEMS));
     const [wrongItems, setWrongItems] = useState(() => getChildValue(profileId, 'englishWrongItems', []));
     const [history, setHistory] = useState(() => getChildValue(profileId, 'englishDictationHistory', []));
     const [idx, setIdx] = useState(0);
@@ -52,7 +55,9 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
     useEffect(() => setChildValue(profileId, 'englishDictationHistory', history), [history, profileId]);
 
     useEffect(() => {
-        setItems(getChildValue(profileId, 'englishDictationItems', DEFAULT_ITEMS));
+        const currentAssignment = getActiveAssignment(profileId);
+        const currentItems = currentAssignment?.subject === 'englishDictation' ? parseEnglishItems(currentAssignment.items.join('\n')) : null;
+        setItems(currentItems?.length ? currentItems : getChildValue(profileId, 'englishDictationItems', DEFAULT_ITEMS));
         setWrongItems(getChildValue(profileId, 'englishWrongItems', []));
         setHistory(getChildValue(profileId, 'englishDictationHistory', []));
         setIdx(0);
@@ -67,7 +72,7 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
         playAudio(current.text, voiceURI, 0, 'en');
     };
 
-    const saveWrongToNotebook = (item, text, childAnswer) => {
+    const saveWrongToNotebook = (item, grading, childAnswer) => {
         const notebook = loadNotebook(profileId);
         const saved = upsertDictationMistake(notebook, {
             subject: '英语',
@@ -75,26 +80,36 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
             originalQuestion: `英文听写：${item.meaning ? `${item.meaning} / ` : ''}${item.text}`,
             wrongAnswer: childAnswer,
             correctAnswer: item.text,
-            analysis: text || '英文听写没有写对。',
+            analysis: grading.errorDetails.join('；') || '英文听写没有写对。',
             reviewTip: '先听发音，再看拼写规律，最后遮住重写。',
-            sourceKey: `dictation:en:${item.text.toLowerCase()}`,
+            sourceKey: `dictation:en:${assignment?.id || 'library'}:${item.text.toLowerCase()}`,
+            assignmentId: assignment?.id || '',
+            assignmentTitle: assignment?.title || '',
+            gradingResult: grading.result,
+            gradingEvidence: grading.evidence,
+            gradingConfidence: grading.confidence,
+            gradingTranscription: grading.transcription,
+            gradingErrorDetails: grading.errorDetails,
             tags: ['英文听写']
         });
         if (saved.ok) saveNotebook(profileId, saved.state);
     };
 
-    const recordResult = (item, nextResult, text, childAnswer = '拍照批改') => {
-        const record = { id: Date.now(), item, answer: childAnswer, result: nextResult, feedback: text, createdAt: new Date().toISOString() };
+    const recordResult = (item, grading, childAnswer = '拍照批改') => {
+        const { result: nextResult, feedback: text } = grading;
+        const sourceKey = `dictation:en:${assignment?.id || 'library'}:${item.text.toLowerCase()}`;
+        const record = { id: Date.now(), assignmentId: assignment?.id || null, item, answer: childAnswer, result: nextResult, feedback: text, confidence: grading.confidence, evidence: grading.evidence, transcription: grading.transcription, errorDetails: grading.errorDetails, createdAt: new Date().toISOString() };
         setHistory(prev => [record, ...prev].slice(0, 100));
         setSessionResults(prev => [...prev, { text: item.text, result: nextResult }]);
+        if (assignment?.id) recordAssignmentAttempt(profileId, assignment.id, { item: item.text, answer: childAnswer, result: nextResult, feedback: text, confidence: grading.confidence, evidence: grading.evidence, type: 'englishDictation' });
         if (nextResult === 'wrong') {
             setWrongItems(prev => prev.some(w => w.text === item.text) ? prev : [item, ...prev].slice(0, 100));
-            saveWrongToNotebook(item, text, childAnswer);
+            saveWrongToNotebook(item, grading, childAnswer);
         }
         if (nextResult === 'correct') {
             setWrongItems(prev => prev.filter(w => w.text !== item.text));
             const notebook = loadNotebook(profileId);
-            const saved = resolveDictationMistake(notebook, `dictation:en:${item.text.toLowerCase()}`, text);
+            const saved = resolveDictationMistake(notebook, sourceKey, text);
             if (saved.ok) saveNotebook(profileId, saved.state);
             addStar();
         }
@@ -122,18 +137,18 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
 - 图片模糊、遮挡、没有写目标英文时，result 为 uncertain。
 
 请只返回 JSON：
-{"result":"correct|wrong|uncertain","feedback":"给小朋友的一句话中文反馈，顺便指出一个拼写记忆点"}`;
-        const res = await callLLM({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }] }] });
+{"schemaVersion":1,"result":"correct|wrong|uncertain","confidence":"high|medium|low","transcription":"图片中识别到的孩子书写，无法识别则空","evidence":"判断依据","errorDetails":["具体拼写或句子错误，正确时为空数组"],"feedback":"给小朋友的一句话中文反馈，顺便指出一个拼写记忆点"}`;
+        const res = await requestStructuredGrading(callLLM, [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }]);
         setBusy(false);
         if (res.error) {
             setFeedback(res.error);
             setResult('uncertain');
             return;
         }
-        const parsed = parseGradingResult(res.text);
+        const parsed = res.grading;
         setResult(parsed.result);
         setFeedback(parsed.feedback);
-        recordResult(current, parsed.result, parsed.feedback, '拍照批改');
+        recordResult(current, parsed, '拍照批改');
         playAudio(parsed.feedback, chineseVoice);
     };
 
