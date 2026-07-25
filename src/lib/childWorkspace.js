@@ -170,7 +170,9 @@ export function setChildValue(profileId, key, value) {
     const workspace = cache.get(profileId);
     if (!workspace) return;
     workspace.data[key] = clone(value);
-    return persist(profileId);
+    // Callers often invoke this from a React effect. Do not return the write
+    // promise, because React would treat it as an effect cleanup callback.
+    persist(profileId);
 }
 
 export function getChildWorkspaceStatus(profileId) {
